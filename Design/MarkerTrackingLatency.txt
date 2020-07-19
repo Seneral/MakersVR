@@ -1,0 +1,109 @@
+
+Blob Encoding
+=============
+
+5Bytes (40Bits) per Blob
+
+XXXXXXXXXXXXXX YYYYYYYYYYYYYY SSSSSS VVV RGB
+14Bits X       14Bits  Y      6Bits  3
+X: normalized X Coords (X/2^14) in preset FoV of Camera
+Y: normalized Y Coords (Y/2^14) in preset FoV of Camera
+S: normalized Size ((1.05^S - 1)/1.05^2^6 * 100) in half-pixels? or exponential
+R,G,B: Color over threshold - white 111
+
+
+6Bytes (48Bits) per Blob
+
+XXXXXXXXXXXXXXXX YYYYYYYYYYYYYYYY SSSSSSSS VVVVV RGB
+16Bits X         16Bits  Y        8Bits S  5B V  Col
+X: normalized X Coords (X/2^16) in preset FoV of Camera
+Y: normalized Y Coords (Y/2^16) in preset FoV of Camera
+S: normalized Size ((1.05^S - 1)/1.05^2^6 * 100) in half-pixels? or exponential
+R,G,B: Color over threshold - white 111
+
+
+Packet Sizes and Bandwidth
+==========================
+
+Around 12 Markers for full setup
+	12*6 = 72 Blobs
+	72*6 = 432 Bytes
+Total bytes per Frame on average (only two cameras on average with occlusion)
+	432 * 2 = 864 Bytes
+Total Bandwidth:
+	432 * 2 * 40 = 34.560 Bytes/s
+
+Around 3 Markers for just full body tracking
+	3*6 = 18 Blobs
+	18*6 = 108 Bytes
+Total bytes per Frame on average (only two cameras on average with occlusion)
+	108 * 2 = 216 Bytes
+Total Bandwidth:
+	108 * 2 * 40 = 8.640 Bytes/s
+
+
+UART Latency
+============
+
+For full setup:
+Latency @57600 Baudrate:
+	432 * 8 / 57600 = 60ms
+Latency @115200 Baudrate:
+	432 * 8 / 115200 = 30ms
+Latency @128000 Baudrate:
+	432 * 8 / 128000 = 27ms
+
+
+For just full body tracking:
+Latency @57600 Baudrate:
+	108 * 8 / 57600 = 15ms
+Latency @115200 Baudrate:
+	108 * 8 / 115200 = 7.5ms
+Latency @128000 Baudrate:
+	108 * 8 / 128000 = 6.75ms
+Latency @921600 Baudrate:
+	108 * 8 / 921600 = 0.9375ms
+
+
+USB Frames and Latency
+======================
+
+For full setup:
+	432 * 2 = 864 Bytes
+Using interrupt transfer:
+	14 USB Frames => > 14ms Latency
+Using isonchronous transfer:
+	1 USB Frame => > 1ms Latency
+
+For just full body tracking:
+	108 * 2 = 216 Bytes
+Using interrupt transfer: 
+	4 USB Frames => > 4ms Latency
+Using isonchronous transfer:
+	1 USB Frame => > 1ms Latency
+
+
+3D Pose Data Encoding
+=====================
+
+Each Marker:
+16Bit position is enough for 0.1mm precision on 5m space
+16Bit rotation is probably enough for a 100th of a degree precision
+3*16Bit integers + 4*16Bit integers or similar
+So 3*2 + 4*2 = 14Bytes
+
+14Bytes in 3D vs 4*4*2=32 Bytes in 2D
+
+For full setup:
+=> 12 * 14 = 168Bytes = 3 USB Frames
+
+For just full body tracking:
+=> 3 * 14 = 42Bytes = 1 USB Frame
+
+
+Latency when Pose cacluated on STM32
+====================================
+Half the bytes, so half the frames
+1 USB frames saved for every 2-4 markers computed on the STM32
+So Pose on STM32 is sensible if 2-4 markers takes less than 1ms to compute (ignoring the computation time on the PC)
+	Provided interrupt transfer is used. If isonchronous, then don't compute on STM32

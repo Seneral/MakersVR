@@ -1,0 +1,58 @@
+
+# NOTE: OpenCV and wxWidgets need to be build first! See build/opencv and build/wxWidgets for instructions
+
+# Set Debug and Architecture options
+!IFDEF DEBUG
+cdebug = -D_DEBUG
+d = d
+!ELSE
+cdebug =
+d = 
+!ENDIF
+!IF "$(VSCMD_ARG_TGT_ARCH)"=="x64"
+wxl = lib/vc_x64_lib
+!ELSE
+wxl = lib/vc_lib
+!ENDIF
+
+# Make sure libraries are built (disabled to allow compiling without linking)
+!IF !EXIST("lib/opencv2")
+!ERROR OpenCV library is missing (lib/opencv2)!
+!ENDIF
+!IF !EXIST("$(wxl)")
+!ERROR wxWidgets libraries are missing ($(wxl))!
+!ENDIF
+!IF !EXIST("include/opencv2")
+!ERROR OpenCV include files are missing (include/opencv2)!
+!ENDIF
+!IF !EXIST("include/wx")
+!ERROR wxWidgets include files are missing (include/wx)!
+!ENDIF
+!IF !EXIST("include/msvc")
+!ERROR wxWidgets include files for MSVC are missing (include/msvc)!
+!ENDIF
+
+# Define the wxWidgets libs based on debug and stuff
+c = u # unicode
+v = 31$(c)$(d)
+#wxlibs = "$(wxl)/wxbase$(v).lib" "$(wxl)/wxbase$(v)_*.lib" "$(wxl)/wxmsw$(v)_*.lib" "$(wxl)/wxjpeg$(d).lib" "$(wxl)/wxexpat$(d).lib" "$(wxl)/wxpng$(d).lib" "$(wxl)/wxregex$(c)$(d).lib" "$(wxl)/wxtiff$(d).lib" "$(wxl)/wxzlib$(d).lib"
+wxlibs = "$(wxl)/wxbase$(v).lib" "$(wxl)/wxmsw$(v)_core.lib" "$(wxl)/wxmsw$(v)_gl.lib"
+
+all: mkbuild configurator.exe emulator.exe
+
+mkbuild:
+	@ IF NOT EXIST "build" mkdir "build"
+	@ IF NOT EXIST "build/obj" mkdir "build/obj"
+
+o = build/obj
+cflags = -c -EHsc -Z7 -W3 -MT$(d) -nologo -Iinclude -Iinclude/msvc -DEIGEN_MPL2_ONLY -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -DGLEW_STATIC $(cdebug)
+{src/}.c{$(o)}.obj:
+  cl $(cflags) $** -Fo$*.obj
+{src/}.cpp{$(o)}.obj:
+  cl $(cflags) $** -Fo$*.obj
+
+configurator.exe: $(o)/main.obj $(o)/comm.obj $(o)/util.obj $(o)/poseinference.obj $(o)/mesh.obj $(o)/glew.obj
+  link -out:build/$*.exe $** $(wxlibs) "lib/opencv2/opencv_*440$(d).lib" "lib/opencv2/zlib$(d).lib" lib/libusb-1.0.lib /nologo
+
+emulator.exe: $(o)/main_emulator.obj $(o)/comm.obj $(o)/util.obj
+  link -out:build/$*.exe $** lib/libusb-1.0.lib user32.lib /nologo
