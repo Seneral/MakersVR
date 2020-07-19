@@ -1,0 +1,23 @@
+wxWidgets Build Instructions
+
+These are instructions for a minimal wxWidgets build (10-20min)
+You can build wxWidgets fully, but using the provided configuration only builds the required modules
+
+This requires a windows machine
+Make sure you have MSVC installed (either with Visual Studio or using Visual Studio Build Tools)
+
+Download the wxWidgets source (either by cloning the git repo, or better downloading the source zip)
+- No need to install any additional dependencies
+- Version used: 3.1.3
+
+Open the Developer Command Prompt of MSVC (x64 native)
+- alternatively, execute vcvars64 in a normal Command Prompt (not Powershell)
+
+Then enter this build folder and build:
+	cd MakersVR_Configurator/build/wxWidgets
+	build.bat "Path/To/wxWidgets_Source"
+
+This will also automatically copy the files into the project directories
+If everything succeeded, you can cleanup all build files (several hundred MB):
+	clean.bat "Path/To/wxWidgets_Source"
+The build is done within the wxWidgets source folder itself, but cleanup should clear everything afaik

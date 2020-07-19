@@ -1,0 +1,33 @@
+{
+	// See https://go.microsoft.com/fwlink/?LinkId=733558
+	// for the documentation about the tasks.json format
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build STM32 and upload",
+			"type": "shell",
+			"dependsOn": [
+				"Build STM32",
+				"Upload STM32"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		},
+		{
+			"label": "Build STM32",
+			"type": "shell",
+			"command": "make",
+			"group": "build"
+		},
+		{
+			"label": "Upload STM32 on COM4",
+			"type": "shell",
+			"command": "STM32_Programmer_CLI -c port=COM4 -d build/MakersVRDevice.elf",
+			"dependsOn": [
+				"Build STM32"
+			]
+		}
+	]
+}

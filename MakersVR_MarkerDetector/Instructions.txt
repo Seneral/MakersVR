@@ -1,0 +1,18 @@
+1. Flash a new Raspbian image onto a SD card
+2. Set up wifi and SSH on the boot partition if you will be using SSH (recommended on Zero W)
+3. Log in using SSH or keyboard+monitor
+4. Enable camera using raspi-config
+5. Install build tools:
+	sudo apt install git
+	sudo apt install cmake
+6. Download source:
+	git glone https://github.com/Seneral/MakersVR
+	cd MakersVR/MakersVR_MarkerDetector
+7. Build source:
+	mkdir build
+	cd build
+	cmake ..
+	make
+8. Run MarkerDetector (GLDetector):
+	./GLDetector -w 640 -w 480 -f 50 -s 50
+-> 8. needs to be done each time for now, no automatic start

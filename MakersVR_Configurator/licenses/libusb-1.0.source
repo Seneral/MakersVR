@@ -1,0 +1,2 @@
+Custom build of libusb, with modification to support FS isochronous streams using the WinUSB backend
+Source code can be found here: https://github.com/Seneral/libusb

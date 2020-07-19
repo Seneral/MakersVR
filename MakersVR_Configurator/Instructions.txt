@@ -1,0 +1,19 @@
+Instructions for building the Configurator test program
+
+Since I can't and don't want to ship hundreds of megabytes binaries, you'll have to build two dependencies yourself
+However for your and my own sanity I made it very straight forward (hopefully)
+
+Requirements:
+- A Windows 10 Machine
+- MSVC compiler (either download Visual Studio, or download only the Build Tools like I did)
+	https://visualstudio.microsoft.com/visual-cpp-build-tools/
+	This also ships with nmake, which is used for all builds
+- For OpenCV build, CMake
+	https://cmake.org/download/
+
+1. Build OpenCV (see build/opencv/OpenCV_Build_Instructions.txt)
+2. Build wxWidgets (see build/opencv/OpenCV_Build_Instructions.txt)
+3. Build MakersVR Configurator
+	In vcvars64 environment: "nmake -F build/Makefile.vc" (see .vscode/tasks.json)
+	Or if you use vscode, just execute the build task
+	Currently, only release works, seemingly due to some errors with the OpenCV build

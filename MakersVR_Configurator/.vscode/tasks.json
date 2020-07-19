@@ -1,0 +1,70 @@
+{
+	"version": "2.0.0",
+	"options": {
+		"shell": {
+			"executable": "cmd.exe",
+			"args": [
+				"/d", "/c",
+				"vcvars64.bat",
+				"&&"
+			]
+		}
+	},
+    "tasks": [
+		{
+			"label": "MSVC NMAKE Build Release",
+			"type": "shell",
+			"command": "nmake",
+			"args": [
+/*				"/a",*/
+				"/NoLogo",
+				"/F",
+				"build/Makefile.vc",
+			],
+			"problemMatcher": ["$msCompile"],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		},
+		{
+			"label": "MSVC NMAKE Build Debug",
+			"type": "shell",
+			"command": "nmake",
+			"args": [
+/*				"/a",*/
+				"/NoLogo",
+				"/F",
+				"build/Makefile.vc",
+				"DEBUG=",
+			],
+			"problemMatcher": ["$msCompile"],
+			"group": "build"
+		},
+        {
+            "label": "Run Configurator",
+            "type": "shell",
+            "command": "${workspaceFolder}\\build\\configurator.exe",
+            "args": [],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            }
+        },
+        {
+            "label": "Run Emulator",
+            "type": "shell",
+            "command": "${workspaceFolder}\\build\\emulator.exe",
+            "args": [],
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            }
+        }
+    ]
+}

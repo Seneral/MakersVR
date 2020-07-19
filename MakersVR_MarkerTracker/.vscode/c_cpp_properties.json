@@ -1,0 +1,20 @@
+{
+    "configurations": [
+        {
+            "name": "ARM",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+				"_UNICODE",
+				"USE_FULL_LL_DRIVER",
+				"STM32F103xB",
+				"STM32F1",
+				"USBD_STM32F103"
+            ]
+        }
+    ],
+    "version": 4
+}
