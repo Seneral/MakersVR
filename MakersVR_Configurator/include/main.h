@@ -7,8 +7,9 @@
 #ifndef MAIN_H
 #define MAIN_H
 
-#include <vector>
-#include <thread>
+#include "util.h"
+#include "comm.h"
+#include "poseinference.hpp"
 
 #include "GL/glew.h"
 
@@ -44,79 +45,105 @@
 #include "wx/textctrl.h"
 #include "wx/log.h"
 
-#include "comm.h"
-#include "poseinference.hpp"
+#include <vector>
+#include <thread>
 
-
-// the rendering context used by all GL canvases
-class GLContext : public wxGLContext
+enum ConfiguratorState
 {
-public:
-    GLContext(wxGLCanvas *canvas);
-private:
-
+	STATE_Idle = 0,
+	STATE_Connected = 1,
+	STATE_Testing = 2
 };
 
-class BlobCanvas : public wxGLCanvas
+/**
+ * Frame with camera view from a (simulated) MarkerDetector
+ */
+class CameraFrame : public wxFrame
 {
 public:
-	std::vector<Point> m_blobs;
+	CameraFrame(std::string name);
+	void Repaint();
+private:
+	wxGLCanvas *m_canvas;
+	void OnClose(wxCloseEvent& event);
+	void OnPaint(wxPaintEvent& event);
+	void OnKeyDown(wxKeyEvent &event);
+};
+
+/**
+ * Camera State of a MarkerDetector with currently estimated transform, blobs and estimated poses
+ */
+typedef struct
+{
+	Transform camera;
+	std::vector<Point> blobs;
+	std::vector<Pose> poses;
+	// Deprecated:
 	std::vector<Marker> m_markers;
 	std::vector<Point*> m_freeBlobs;
-	std::vector<Pose> m_poses;
+} CameraState;
 
-    BlobCanvas(wxWindow *parent);
+/**
+ * MarkerDetector with state and optional camera view frame
+ */
+typedef struct {
+	CameraState state;
+	CameraFrame *frame;
+} MarkerDetector;
 
-private:
-    void OnPaint(wxPaintEvent& event);
-    void OnKeyDown(wxKeyEvent& event);
-    wxDECLARE_EVENT_TABLE();
-};
-
-
-class BlobFrame : public wxFrame
-{
-public:
-	BlobCanvas *m_blobCanvas;
-
-	BlobFrame();
-	void SubmitBlobs();
-private:
-	void OnExit(wxCommandEvent &event);
-	wxDECLARE_EVENT_TABLE();
-};
-
-
+/**
+ * Main configurator window with controls
+ */
 class ConfiguratorFrame : public wxFrame
 {
 public:
-	std::vector<BlobFrame*> m_blobFrames;
 	ConfiguratorFrame();
-	std::thread *testThread;
 private:
 	void OnExit(wxCommandEvent &event);
 	void OnAbout(wxCommandEvent &event);
 	void OnConnect(wxCommandEvent &event);
-	void OnTest(wxCommandEvent &event);
+	void OnDisconnect(wxCommandEvent &event);
+	void OnStartTesting(wxCommandEvent &event);
+	void OnStopTesting(wxCommandEvent &event);
+	void OnSelectMarker(wxCommandEvent &event);
+	void OnClose(wxCloseEvent& event);
 	wxDECLARE_EVENT_TABLE();
-	wxTextCtrl *logText;
 };
 
+/**
+ * Main configurator logic
+ */
 class ConfiguratorApp : public wxApp
 {
 public:
-	CommState m_commState;
+	// Main GUI frame
 	ConfiguratorFrame *m_frame;
+	// Application and comm state
+	enum ConfiguratorState m_state;
+	CommState m_commState;
+	// Loaded config data
+	Config m_config;
+	std::vector<DefMarker> m_markerData;
+	// MarkerDetector windows and their state
+	std::vector<MarkerDetector> m_markerDetectors;
+	// Test thread
+	bool runTestThread;
+	std::thread *testThread;
 
-    ConfiguratorApp() { m_glContext = NULL; m_frame = NULL; }
-
+    ConfiguratorApp() { m_glContext = NULL; m_frame = NULL; testThread = NULL; m_commState.libusb = NULL; }
 	virtual bool OnInit();
 	virtual int OnExit();
-
-    GLContext& GetContext(wxGLCanvas *canvas);
+    wxGLContext *GetContext(wxGLCanvas *canvas);
+    CameraState *GetCameraState(CameraFrame *frame);
+    bool SetupComm();
+	void Connect();
+	void Disconnect();
+	void StartTesting();
+	void StopTesting();
+	void OnCloseCameraFrame(CameraFrame *frame);
 
 private:
-    GLContext *m_glContext;
+    wxGLContext *m_glContext;
 };
 
 #endif // MAIN_H

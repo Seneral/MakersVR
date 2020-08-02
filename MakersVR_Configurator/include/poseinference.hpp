@@ -7,16 +7,12 @@
 #ifndef DEF_POSE_INFERENCE
 #define DEF_POSE_INFERENCE
 
+#include "util.h"
+
+#include "Eigen/Core"
+#include "Eigen/Geometry"
+
 #include <vector>
-
-#define USE_CV
-#define USE_EIGEN
-
-#ifdef USE_CV
-// Don't include full library, only needed modules
-#include "opencv2/core.hpp"
-#include "opencv2/calib3d.hpp"
-#endif
 
 /*
  * Pose Inference
@@ -41,8 +37,8 @@ typedef struct Point{
 typedef struct Pose
 {
 	Point *center;
-	double translation[3];
-	double rotation[3];
+	Eigen::Vector3f trans;
+	Eigen::Matrix3f rot;
 	// TODO
 	// 3D AND 2D pixel space of all LEDs
 	// Need access to at least the center LED screen space position for color fetching later
@@ -64,16 +60,6 @@ typedef struct MarkerCandidate
 	float error;
 } MarkerCandidate;
 
-/*typedef struct Line
-{
-	Point edgeIntersect;
-	float angle;
-	float start;
-	float end;
-	std::vector<Point*> points;
-
-} Line;*/
-
 typedef struct LinePoint
 {
 	float X;
@@ -83,53 +69,57 @@ typedef struct LinePoint
 	float B;
 } LinePoint;
 
-
-
-
-
-// Marker pose inference
-#ifdef USE_CV
-extern std::vector<cv::Point3f> marker3DTemplate;
-extern cv::Matx33f camMat;
-extern cv::Matx14f distort;
-// Current values used for intrinsic guess
-extern cv::Matx31d rotation;
-extern cv::Matx31d translation;
-#endif
-
-
-
+typedef struct
+{
+	Eigen::Vector3f pos;
+	Eigen::Matrix3f rot;
+} Transform;
 
 /* Functions */
 
 /*
- * Initialize resources required for LED Tracking and setup camera parameters
+ * Initialize resources for pose inference
  */
 void initPoseInference(int Width, int Height);
 
 /*
- * Finds all (potential) marker and also returns all free (unassociated) blobs left
+ * Finds all (potential) marker and also returns all free (unassociated) blobs left (Deprecated)
  */
 void findMarkerCandidates(std::vector<Point> &blobs, std::vector<Marker> &marker, std::vector<Point*> &freeBlobs);
 
 /*
- * Infer the pose of a set of (likely) markers
+ * Infer the pose of a set of (likely) markers and the known camera position to transform into world space
  */
-void inferMarkerPoses(std::vector<Marker> &marker, std::vector<Pose> &poses);
-
-
-void inferMarkerPose(std::vector<Point> &marker, Pose &pose);
+void inferMarkerPoses(std::vector<Marker> &marker, const Transform &camera, std::vector<Pose> &poses);
 
 /*
- * Projects marker into image plane provided translation in centimeters and rotation, both relative to camera
+ * Infer the pose of a marker given it's image points and the known camera position to transform into world space
  */
-void projectMarker(std::vector<Point> &imagePoints, double *translation, double *rotation, float ptScale);
+void inferMarkerPoseGeneric(std::vector<Point> &marker, const Transform &camera, Pose &pose);
 
 /*
  * Visualize poses
  */
-void visualizePoses(const std::vector<Point> &blobs, const std::vector<Marker> &marker, const std::vector<Pose> &poses);
+void visualizePoses(const Transform &camera, const std::vector<Point> &blobs, const std::vector<Marker> &marker, const std::vector<Pose> &poses);
 
+/**
+ * Cleanup of resources
+ */
 void cleanPoseInference();
+
+/*
+ * Sets the specified marker data as the current target
+ */
+void setActiveMarkerData(DefMarker markerData);
+
+/*
+ * Gets the currently expected blob count of the current target
+ */
+int getExpectedBlobCount();
+
+/*
+ * Projects marker into image plane provided translation in centimeters and rotation, as well as a camera position
+ */
+void createMarkerProjection(std::vector<Point> &imagePoints, const Transform &camera, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float ptScale);
 
 #endif

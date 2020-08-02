@@ -5,14 +5,13 @@
  */
 
 #include "comm.h"
+#include "util.h"
 
 #define DEBUG_DEVICE_DESC
 #define MEASURE_STALL_RECOVERY
 
 #pragma warning(disable : 4200)
-#include "libusb.h"
-
-#include "util.h"
+#include "libusb/libusb.h"
 
 #include <iostream>
 #include <thread>
@@ -75,6 +74,7 @@ std::atomic<int> g_stallTransferCount;
 
 bool comm_init(CommState *state)
 {
+	if (state->libusb != NULL) return true;
 	memset(state, 0, sizeof(state));
 	libusb_context *context;
 	if (libusb_init(&context) == 0)
@@ -240,6 +240,7 @@ bool comm_connect(CommState *state, bool altSetting)
 
 bool comm_disconnect(CommState *state)
 {
+	if (state->libusb == NULL) return false;
 	state->usbDeviceActive = false;
 	if (!state->libusb->usbDeviceConnected) return false;
 	printf("Disconnecting device...\n");
@@ -279,6 +280,7 @@ bool comm_disconnect(CommState *state)
 
 void comm_exit(CommState *state)
 {
+	if (state->libusb == NULL) return;
 	// Exit
 	printf("Exiting...\n");
 	libusb_exit(state->libusb->context);

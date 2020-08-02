@@ -44,7 +44,7 @@
         {
             "label": "Run Configurator",
             "type": "shell",
-            "command": "${workspaceFolder}\\build\\configurator.exe",
+            "command": "${workspaceFolder}\\configurator.exe",
             "args": [],
             "group": {
                 "kind": "test",
@@ -58,7 +58,7 @@
         {
             "label": "Run Emulator",
             "type": "shell",
-            "command": "${workspaceFolder}\\build\\emulator.exe",
+            "command": "${workspaceFolder}\\emulator.exe",
             "args": [],
             "group": "test",
             "presentation": {

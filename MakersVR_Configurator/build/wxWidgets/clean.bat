@@ -4,11 +4,11 @@
 set WX_SRC=%1
 if "%WX_SRC%"=="" (
 	echo Please specify the wxWidgets source download folder as an argument!
-	pause exit
+	exit /B
 )
 if not exist "%WX_SRC%" (
 	echo %WX_SRC% does not exist!
-	pause exit
+	exit /B
 ) else (
 	echo wxWidgets Directory is %WX_SRC%
 )
@@ -42,4 +42,3 @@ if exist %WX_SRC%\lib (
 )
 
 echo Cleanup done.
-pause
