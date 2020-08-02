@@ -4,55 +4,60 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "poseinference.hpp"
-
-#include "mesh.hpp"
-#include <bitset>
-#include <iostream>
-#include <algorithm>
-#include <cmath>
-
-#ifdef USE_EIGEN
-#include <Eigen/Core>
-#include <Eigen/Geometry>
-#endif
-
 #define LINE_MERGE_ANGLE 10
 #define LINE_MAX_CONNECTION_DIST 30 // In percent of full width
 #define MAX_BASE_DIFF 0.2 // Max offset a base center can have relative to base line length
 #define MAX_SIZE_DIFF 4 // Max size factor
 
-/* Structures  */
+#define USE_CV
 
+#include "poseinference.hpp"
+
+#include "mesh.hpp"
+#include "main.h"
+
+#include "util.h"
+
+#include <bitset>
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+
+#ifdef USE_CV
+// Don't include full library, only needed modules
+#include "opencv2/core.hpp"
+#include "opencv2/calib3d.hpp"
+#endif
 
 /* Variables  */
 
-static const GLint vPosAdr = 0, vColAdr = 1, vUVAdr = 2, vNrmAdr = 3;
-static const float PI = 3.14159265358979323846f;
-
-int width, height;
-
-// Viz resources
-Mesh *vizCoordCross;
-//ShaderProgram *shaderESLines;
-//ShaderProgram *vizShader;
-//GLuint vizMVPAdr;
-GLuint vizLinesVBO; // Line buffer for uploading visualization lines to GPU
-
 // Marker pose inference
+int width, height;
 double fovV, fovH;
+DefMarker marker3DTemplate;
+
 #ifdef USE_CV
-std::vector<cv::Point3f> marker3DTemplate;
-cv::Matx33f camMat;
-cv::Matx14f distort;
+std::vector<cv::Point3f> cv_marker3DTemplate;
+cv::Matx33f cv_camMat;
+cv::Matx14f cv_distort;
 // Current values used for intrinsic guess
-cv::Matx31d rotation;
-cv::Matx31d translation;
+cv::Matx31d cv_rotation;
+cv::Matx31d cv_translation;
 #endif
 
+// Visualization
+static const GLint vPosAdr = 0, vColAdr = 1, vUVAdr = 2, vNrmAdr = 3;
+Mesh *vizCoordCross;
+GLuint vizLinesVBO; // Line buffer for uploading visualization lines to GPU
+
+// Helper functions for projection and visualization
+Eigen::Matrix4f createProjectionMatrix();
+Eigen::Matrix4f createModelMatrix(const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float scale);
+Eigen::Matrix4f createViewMatrix(const Transform &camera);
+Eigen::Matrix4f createMVP(const Transform &camera, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float scale);
 
 /*
- * Initialize resources required for LED Tracking and setup camera parameters
+ * Initialize resources for pose inference
  */
 void initPoseInference(int Width, int Height)
 {
@@ -69,30 +74,21 @@ void initPoseInference(int Width, int Height)
 		 0, 0, 1, 0, 0, 1,
 	}, {});
 	vizCoordCross->setMode(GL_LINES);
-//	vizShader = new ShaderProgram("../gl_shaders/UnlitES/vert.glsl", "../gl_shaders/UnlitES/frag.glsl");
-//	vizMVPAdr = glGetUniformLocation(vizShader->ID, "MVP");
-//	shaderESLines = new ShaderProgram("../gl_shaders/LineES/vert.glsl", "../gl_shaders/LineES/frag.glsl");
 	// Setup VertexBufferObject for line data
 	glGenBuffers(1, &vizLinesVBO);
 
 #ifdef USE_CV
-	marker3DTemplate = {
-		cv::Point3f( 0.0f, 0.0f, 0.0f), // Center
-		cv::Point3f( 4.0f, 0.0f, 0.0f), // Right
-		cv::Point3f(-4.0f, 0.0f, 0.0f), // Left
-		cv::Point3f( 0.0f, 4.0f, 0.0f)  // Header
-	};
-	// init dummy camera matrix
+	// Init dummy camera matrix
 	float focalLen = (float)width; // Approximation
-	camMat = cv::Matx33f(
+	cv_camMat = cv::Matx33f(
 		focalLen, 0, (float)width/2,
 		0, focalLen, (float)height/2,
 		0, 0, 1);
-	distort = cv::Matx14f(0, 0, 0, 0);
+	cv_distort = cv::Matx14f(0, 0, 0, 0);
 	// Get camera parameters
 	double focalLength, aspectRatio;
 	cv::Point2d principalPoint;
-	cv::calibrationMatrixValues(camMat, cv::Size2i(width, height), 3.68f, 2.76f, fovH, fovV, focalLength, principalPoint, aspectRatio);
+	cv::calibrationMatrixValues(cv_camMat, cv::Size2i(width, height), 3.68f, 2.76f, fovH, fovV, focalLength, principalPoint, aspectRatio);
 #endif
 
 	// TODO
@@ -100,7 +96,7 @@ void initPoseInference(int Width, int Height)
 }
 
 /*
- * Finds all (potential) marker and also returns all free (unassociated) blobs left
+ * Finds all (potential) marker and also returns all free (unassociated) blobs left (Deprecated)
  */
 void findMarkerCandidates(std::vector<Point> &blobs, std::vector<Marker> &markers, std::vector<Point*> &freeBlobs) 
 {
@@ -246,10 +242,38 @@ void findMarkerCandidates(std::vector<Point> &blobs, std::vector<Marker> &marker
 	}
 }
 
-/*
- * Infer the pose of a set of (likely) markers
+/**
+ * Interprets OpenCV position and rotation in camera spaces and transforms it into correct scene transformations 
  */
-void inferMarkerPoses(std::vector<Marker> &markers, std::vector<Pose> &poses)
+void interpretCVSpace(const Transform &camera, const cv::Matx31d &cvPos, const cv::Matx31d &cvRot, Eigen::Vector3f *position, Eigen::Matrix3f *rotation)
+{
+	// Z-Axis of OpenGL/Blender coordinate frame is opposite of OpenCV
+	// OpenGL/Blender is -z foward, +z towards viewer
+	Eigen::Vector3f pos(cvPos(0), cvPos(1), -cvPos(2));
+
+	// Convert rodrigues rotation parameters into rotation matrix
+	cv::Matx33d cvRotMat;
+	cv::Rodrigues(cvRot, cvRotMat);
+	// Copy rotation matrix into Eigen rotation matrix (with transpose to account for row/column storage)
+	Eigen::Matrix3d rotD;
+	cv::Mat rotMat_Shadow(3, 3, CV_64F, rotD.data(), (size_t)(rotD.stride()*sizeof(double)));
+	cv::transpose(cvRotMat, rotMat_Shadow);
+	// Convert to euler angles temporarily
+	Eigen::Vector3f rotAngles = getEulerXYZ(rotD.cast<float>());
+	// OpenCV rotation needs to be inverted, in addition to accounting for the z-axis flip
+	rotAngles = Eigen::Vector3f(-rotAngles.x(), -rotAngles.y(), +rotAngles.z());
+	// Convert back to matrix
+	Eigen::Matrix3f rot = getRotationXYZ(rotAngles);
+
+	// Finally, remove camera transform
+	*position = camera.rot*pos + camera.pos;
+	*rotation = camera.rot*rot;
+}
+
+/*
+ * Infer the pose of a set of (likely) markers and the known camera position to transform into world space
+ */
+void inferMarkerPoses(std::vector<Marker> &markers, const Transform &camera, std::vector<Pose> &poses)
 {
 	poses.clear();
 	poses.reserve(markers.size());
@@ -269,172 +293,91 @@ void inferMarkerPoses(std::vector<Marker> &markers, std::vector<Pose> &poses)
 		};
 
 		// use solvePnP to recreate rotation and translation
-		cv::solvePnP(marker3DTemplate, marker2D, camMat, distort, rotation, translation, false, cv::SOLVEPNP_ITERATIVE);
-		rotation = rotation * (180.0f/PI);
-		translation = translation;
+		cv::solvePnP(cv_marker3DTemplate, marker2D, cv_camMat, cv_distort, cv_rotation, cv_translation, false, cv::SOLVEPNP_ITERATIVE);
 
-#ifdef MARKER_DEBUG
-		std::cout << "Translation: " << translation << std::endl;
-		std::cout << "Rotation: " << rotation << std::endl;
-#endif
-
-		poses.push_back({
-			marker->center,
-			{ (double)translation(0), (double)translation(1), (double)translation(2) },
-			{ (double)rotation(0), (double)std::abs(rotation(1)), (double)rotation(2) }
-		});
+		// Convert from OpenCV to Blender/OpenGL space and account for camera transform
+		Eigen::Vector3f pos;
+		Eigen::Matrix3f rot;
+		interpretCVSpace(camera, cv_translation, cv_rotation, &pos, &rot);
+		poses.push_back({ marker->center, pos, rot });
 	}
 
 #endif
 }
 
 /*
- * Infer the pose of a set of (likely) markers
+ * Infer the pose of a marker given it's image points and the known camera position to transform into world space
  */
-void inferMarkerPose(std::vector<Point> &marker, Pose &pose)
+void inferMarkerPoseGeneric(std::vector<Point> &marker, const Transform &camera, Pose &pose)
 {
 #ifdef USE_CV
 	// Create CV 2D array of marker points
-	std::vector<cv::Point2f> marker2D {
-		cv::Point2f(marker[0].X, marker[0].Y),
-		cv::Point2f(marker[1].X, marker[1].Y),
-		cv::Point2f(marker[2].X, marker[2].Y),
-		cv::Point2f(marker[3].X, marker[3].Y)
-	};
+	std::vector<cv::Point2f> marker2D;
+	for (int i = 0; i < marker.size(); i++)
+		marker2D.push_back(cv::Point2f(marker[i].X, marker[i].Y));
 
 	// use solvePnP to recreate rotation and translation
-	cv::solvePnP(marker3DTemplate, marker2D, camMat, distort, rotation, translation, false, cv::SOLVEPNP_ITERATIVE);
-	rotation = rotation * (180.0f/PI);
-	translation = translation;
+	cv::solvePnP(cv_marker3DTemplate, marker2D, cv_camMat, cv_distort, cv_rotation, cv_translation, false, cv::SOLVEPNP_ITERATIVE);
 
-#ifdef MARKER_DEBUG
-	std::cout << "Translation: " << translation << std::endl;
-	std::cout << "Rotation: " << rotation << std::endl;
+	// Convert from OpenCV to Blender/OpenGL space and account for camera transform
+	pose.center = &marker[0];
+	interpretCVSpace(camera, cv_translation, cv_rotation, &pose.trans, &pose.rot);
 #endif
-
-	/*pose = {
-		&marker[0],
-		{ (double)translation(0), (double)translation(1), (double)translation(2) },
-		{ (double)rotation(0), (double)std::abs(rotation(1)), (double)rotation(2) }
-	};*/
-
-#endif
-}
-
-#ifdef USE_EIGEN
-Eigen::Matrix4f createProjectionMatrix()
-{
-	float zN = 10.0f, zF = 1000.0f; // 0.1m-10m
-	float a = -(zF+zN)/(zF-zN), b = -2*zN*zF/(zF-zN);
-	float sX = (float)(1.0f/std::tan(fovH*PI/360.0f)), sY = (float)(1.0f/std::tan(fovV*PI/360.0f));
-
-	// Projection
-	Eigen::Matrix4f p = Eigen::Matrix4f::Zero();
-	p << sX, 0, 0, 0,
-		0, sY, 0, 0,
-		0, 0, a, b,
-		0, 0, -1, 0;
-
-	return p;
-}
-Eigen::Matrix4f createModelMatrix(const double *translation, const double *rotation, float scale)
-{
-	// Rotation
-	Eigen::Matrix4f r = Eigen::Matrix4f::Identity();
-	r.block(0,0,3,3) = Eigen::Matrix3f(Eigen::Quaternionf(
-		  Eigen::AngleAxisf((float)rotation[0]*PI/180.0f, Eigen::Vector3f::UnitX())
-		* Eigen::AngleAxisf((float)rotation[1]*PI/180.0f, Eigen::Vector3f::UnitY())
-		* Eigen::AngleAxisf((float)rotation[2]*PI/180.0f, Eigen::Vector3f::UnitZ())
-	));
-
-	// Translation + Scale
-	Eigen::Matrix4f ts;
-	ts << scale, 0, 0, +(float)translation[0],
-		  0, scale, 0, +(float)translation[1],
-		  0, 0, scale, -(float)translation[2],
-		  0, 0, 0, 1;
-
-	// Combine to model view projection matrix
-	return ts*r;
-}
-Eigen::Matrix4f createMVP(const double *translation, const double *rotation, float scale)
-{
-	return createProjectionMatrix() * createModelMatrix(translation, rotation, scale);
-}
-#endif
-
-/*
- * Projects marker into image plane provided translation in centimeters and rotation, both relative to camera
- */
-void projectMarker(std::vector<Point> &imagePoints, double *translation, double *rotation, float ptScale)
-{
-	#if defined(USE_EIGEN) && defined(USE_CV)
-	// Create MVP in camera space, translation in centimeters
-	Eigen::Matrix4f mvp = createMVP(translation, rotation, 1.0f);
-	// Project each marker point into image space
-	imagePoints.resize(marker3DTemplate.size());
-	for (int i = 0; i < marker3DTemplate.size(); i++)
-	{
-		cv::Point3f *markerPt = &marker3DTemplate[i];
-		Eigen::Vector4f point(markerPt->x, markerPt->y, markerPt->z, 1.0f);
-		point = mvp * point;
-		imagePoints[i].X = (point.x() / point.w()+1)/2 * width;
-		imagePoints[i].Y = (point.y() / point.w()+1)/2 * height;
-		imagePoints[i].S = ptScale * 100/((float)translation[2]);
-	}
-	#endif
 }
 
 /*
  * Visualize poses
  */
-void visualizePoses(const std::vector<Point> &blobs, const std::vector<Marker> &markers, const std::vector<Pose> &poses)
+void visualizePoses(const Transform &camera, const std::vector<Point> &blobs, const std::vector<Marker> &markers, const std::vector<Pose> &poses)
 {
-	glColor3f(1,0,0);
-//	glBegin(GL_POINTS);
-
+	// Reset matrices
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 
+	// Render all blobs
+	glColor3f(1,0,0);
 	for (int i = 0; i < blobs.size(); i++)
 	{
 		GLfloat s = blobs[i].S*2.0f;
-		glPointSize(s <= 1? 1.0f : s);
-		glBegin(GL_POINTS);
-		glVertex3f(blobs[i].X/width*2-1, blobs[i].Y/height*2-1, 0.5f);
+		//glPointSize(s <= 1? 1.0f : s);
+		glPointSize(6.0f);
+		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
+		glVertex3f(blobs[i].X/width*2-1, blobs[i].Y/height*2-1, 0.9f);
 		glEnd();
 	}
-//	glEnd();
 
-	// Just render them using normal OpenGL in 3D Space, assuming render targets, etc. have been set
-
-	//vizShader->use();
-	glColor3f(0, 0, 1);
-
+	// Render inferred poses' dots
+/*	glColor3f(0,1,0);
 	for (int i = 0; i < poses.size(); i++)
 	{
 		const Pose *pose = &poses[i];
+		Eigen::Matrix4f mvp = createMVP(camera, pose->trans, pose->rot, 1.0f);
+		for (int j = 0; j < marker3DTemplate.pts.size(); j++)
+		{
+			DefMarkerPoint *markerPt = &marker3DTemplate.pts[j];
+			Eigen::Vector4f point(markerPt->pos.x(), markerPt->pos.y(), markerPt->pos.z(), 1.0f);
+			point = mvp * point;
+			glPointSize(4.0f);
+			glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
+			glVertex3f(point.x() / point.w(), point.y() / point.w(), point.z() / point.w());
+			glEnd();
+		}
+	}
+	glLoadIdentity();*/
 
-//		printf("Drawing Translation: (%f, %f, %f)\n", pose->translation[0], pose->translation[1], pose->translation[2]);
-//		printf("Drawing Rotation: (%f, %f, %f)\n", pose->rotation[0], pose->rotation[1], pose->rotation[2]);
-
-#ifdef USE_EIGEN
-		// Create projection and model(view) matrix from pose and set
-//		glMatrixMode(GL_PROJECTION);
-//		glLoadMatrixf((float*)createProjectionMatrix().data());
-//		glMatrixMode(GL_MODELVIEW);
-//		glLoadMatrixf((float*)createModelMatrix(pose->translation, pose->rotation, 4.0f).data());
-//		glMatrixMode(GL_MODELVIEW);
-		glLoadMatrixf((float*)createMVP(pose->translation, pose->rotation, 10.0f).data());
-#endif
-
+	// Render inferred poses
+	glColor3f(0, 0, 1);
+	for (int i = 0; i < poses.size(); i++)
+	{
+		const Pose *pose = &poses[i];
+		glLoadMatrixf((float*)createMVP(camera, pose->trans, pose->rot, 4.0f).data());
 		vizCoordCross->draw();
 	}
+	glLoadIdentity();
 
-
-	// Add marker points for visualization
+	// Construct line mesh of detected markers
 	std::vector<LinePoint> vizLinePoints;
 	for (int m = 0; m < markers.size(); m++)
 	{
@@ -459,22 +402,112 @@ void visualizePoses(const std::vector<Point> &blobs, const std::vector<Marker> &
 			(marker->header->Y / height - 0.5f) * 2.0f,
 			1.0, 0.0, 1.0 });
 	}
-
-	// Render viz points
-	glLoadIdentity();
+	
+	// Render lines
 	glColor3f(0, 1, 0);
 	glLineWidth(2.0f);
-	//shaderESLines->use();
 	glBindBuffer(GL_ARRAY_BUFFER, vizLinesVBO);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 5 * vizLinePoints.size(), &vizLinePoints[0], GL_STREAM_DRAW);
 	glVertexAttribPointer(vPosAdr, 2, GL_FLOAT, GL_FALSE, sizeof(float) * 5, (void *)0);
 	glEnableVertexAttribArray(vPosAdr);
-	glVertexAttribPointer(vColAdr, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 5, (void *)2);
-	glEnableVertexAttribArray(vColAdr);
+//	glVertexAttribPointer(vColAdr, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 5, (void *)2);
+//	glEnableVertexAttribArray(vColAdr);
 	glDrawArrays(GL_LINES, 0, (int)vizLinePoints.size());
 }
 
+/**
+ * Cleanup of resources
+ */
 void cleanPoseInference()
 {
 	// TODO
+}
+
+/*
+ * Sets the specified marker data as the current target
+ */
+void setActiveMarkerData(DefMarker markerData)
+{
+	marker3DTemplate = markerData;
+#ifdef USE_CV
+	cv_marker3DTemplate.clear();
+	for (int i = 0; i < marker3DTemplate.pts.size(); i++)
+	{
+		DefMarkerPoint *pt = &marker3DTemplate.pts[i];
+		cv_marker3DTemplate.push_back(cv::Point3f(pt->pos.x(), pt->pos.y(), pt->pos.z()));
+	}
+#endif
+}
+
+/*
+ * Gets the currently expected blob count of the current target
+ */
+int getExpectedBlobCount()
+{
+	return marker3DTemplate.pts.size();
+}
+
+/*
+ * Projects marker into image plane provided translation in centimeters and rotation, both relative to camera
+ */
+void createMarkerProjection(std::vector<Point> &imagePoints, const Transform &camera, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float ptScale)
+{
+	// Create MVP in camera space, translation in centimeters
+	Eigen::Matrix4f mvp = createMVP(camera, translation, rotation, 1.0f);
+	// Project each marker point into image space
+	imagePoints.clear();
+	for (int i = 0; i < marker3DTemplate.pts.size(); i++)
+	{
+		DefMarkerPoint *markerPt = &marker3DTemplate.pts[i];
+		Eigen::Vector4f point(markerPt->pos.x(), markerPt->pos.y(), markerPt->pos.z(), 1.0f);
+		point = mvp * point;
+		if (std::abs(point.x() / point.w()) > 1 || std::abs(point.y() / point.w()) > 1) continue;
+		imagePoints.push_back({
+			(point.x() / point.w() + 1)/2 * width,
+			(point.y() / point.w() + 1)/2 * height,
+			ptScale * 100/translation.z()
+		});
+	}
+}
+
+/* Utility */
+
+Eigen::Matrix4f createProjectionMatrix()
+{
+	float zN = 10.0f, zF = 1000.0f; // 0.1m-10m
+	float a = -(zF+zN)/(zF-zN), b = -2*zN*zF/(zF-zN);
+	float sX = (float)(1.0f/std::tan(fovH*PI/360.0f)), sY = (float)(1.0f/std::tan(fovV*PI/360.0f));
+
+	// Projection
+	Eigen::Matrix4f p = Eigen::Matrix4f::Zero();
+	p << sX, 0, 0, 0,
+		0, sY, 0, 0,
+		0, 0, a, b,
+		0, 0, -1, 0;
+
+	return p;
+}
+Eigen::Matrix4f createModelMatrix(const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float scale)
+{
+	// Rotation
+	Eigen::Matrix4f r = Eigen::Matrix4f::Identity();
+	r.block(0,0,3,3) = rotation;
+
+	// Translation + Scale
+	Eigen::Matrix4f ts;
+	ts << scale, 0, 0, translation.x(),
+		  0, scale, 0, translation.y(),
+		  0, 0, scale, translation.z(),
+		  0, 0, 0, 1;
+
+	// Combine to model view projection matrix
+	return ts*r;
+}
+Eigen::Matrix4f createViewMatrix(const Transform &camera)
+{
+	return createModelMatrix(camera.pos, camera.rot, 1).inverse();
+}
+Eigen::Matrix4f createMVP(const Transform &camera, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float scale)
+{
+	return createProjectionMatrix() * createViewMatrix(camera) * createModelMatrix(translation, rotation, scale);
 }

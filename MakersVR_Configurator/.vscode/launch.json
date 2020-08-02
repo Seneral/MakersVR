@@ -8,7 +8,7 @@
 			"name": "Debug Configurator",
 			"type": "cppvsdbg",
 			"request": "launch",
-			"program": "${workspaceFolder}\\build\\configurator.exe",
+			"program": "${workspaceFolder}\\configurator.exe",
 			"args": [],
 			"stopAtEntry": false,
 			"cwd": "${workspaceFolder}",

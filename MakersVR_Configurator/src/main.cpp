@@ -6,8 +6,6 @@
 
 #include "main.h"
 
-#include "util.h"
-
 #include <chrono>
 #include <atomic>
 #include <stdlib.h>
@@ -22,6 +20,7 @@ static StatValue receiveRate;
 static std::atomic<long long> g_receiveCount = 0;
 #endif
 
+const int testFrameRate = 30;
 const int camWidth = 1640;
 const int camHeight = 1232;
 
@@ -29,14 +28,17 @@ enum CustomEvents
 {
 	ID_Connect = wxID_HIGHEST + 1,
 	ID_Test = wxID_HIGHEST + 2,
+	ID_Marker = wxID_HIGHEST + 3,
 };
 
 static void onControlResponse(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length);
 static void onIsochronousIN(uint8_t *data, int length);
 static void onInterruptIN(uint8_t *data, int length);
 
-static void assureGLInit();
+static bool assureGLInit();
 static void assureGLClean();
+
+static void ThreadSendTestData();
 
 inline void printBuffer(uint8_t *buffer, uint8_t size)
 {
@@ -52,382 +54,418 @@ wxIMPLEMENT_APP(ConfiguratorApp);
 
 bool ConfiguratorApp::OnInit()
 {
-	// Setup usb device communication
-	if (!comm_init(&m_commState)) return false;
-	m_commState.onControlResponse = onControlResponse;
-	m_commState.onInterruptIN = onInterruptIN;
-	m_commState.onIsochronousIN = onIsochronousIN;
+	m_state = STATE_Idle;
+
+	// Read config
+	parseConfigFile("config/config.json", &m_config);
+	for (int i = 0; i < m_config.testing.markerDefinitionFiles.size(); i++)
+	{
+		if (!parseMarkerDataFile(m_config.testing.markerDefinitionFiles[i], &m_markerData))
+		{
+			wxMessageOutput::Get()->Printf (wxT("Failed to read Marker '%s'!"), m_config.testing.markerDefinitionFiles[i]);
+		}
+	}
+	/*for (int i = 0; i < m_markerData.size(); i++)
+	{
+		wxMessageOutput::Get()->Printf (wxT("Marker '%s' has %d points!"), m_markerData[i].label, (int)m_markerData[i].pts.size());
+	}*/
+	
+	// Set default 4-point marker
+	setActiveMarkerData({
+		"Default 4-Point",
+		{
+			{ Eigen::Vector3f( 0.0f, 0.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 120.0f }, // Center
+			{ Eigen::Vector3f( 4.0f, 0.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 120.0f }, // Right
+			{ Eigen::Vector3f(-4.0f, 0.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 120.0f }, // Left
+			{ Eigen::Vector3f( 0.0f, 4.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 120.0f }  // Header
+		}
+	});
+
 	// Open main frame
 	m_frame = new ConfiguratorFrame();
 	return true;
-}
-GLContext &ConfiguratorApp::GetContext(wxGLCanvas *canvas)
-{
-	if (!m_glContext) m_glContext = new GLContext(canvas);
-	m_glContext->SetCurrent(*canvas);
-	return *m_glContext;
 }
 int ConfiguratorApp::OnExit()
 {
 	assureGLClean();
 	delete m_glContext;
-	m_frame->Close();
-	delete m_frame;
 	// Clean up usb device communication
 	comm_disconnect(&m_commState);
 	comm_exit(&m_commState);
 	return 0;
+}
+wxGLContext *ConfiguratorApp::GetContext(wxGLCanvas *canvas)
+{
+	if (!m_glContext) m_glContext = new wxGLContext(canvas);
+	return m_glContext;
+}
+CameraState *ConfiguratorApp::GetCameraState(CameraFrame *frame)
+{
+	for (int i = 0; i < m_markerDetectors.size(); i++)
+	{
+		if (m_markerDetectors[i].frame == frame)
+			return &m_markerDetectors[i].state;
+	}
+	return NULL;
+}
+bool ConfiguratorApp::SetupComm()
+{
+	// Setup usb device communication
+	if (!comm_init(&m_commState)) return false;
+	m_commState.onControlResponse = onControlResponse;
+	m_commState.onInterruptIN = onInterruptIN;
+	m_commState.onIsochronousIN = onIsochronousIN;
+	return true;
+}
+void ConfiguratorApp::Connect()
+{
+	if (!SetupComm())
+	{
+		wxLogError("ERROR: Failed to setup communication system!\n");
+		return;
+	}
+	StopTesting();
+	if (m_state == STATE_Connected) return;
+	// Try to connect to usb Marker Detector
+	if (comm_check_device(&m_commState))
+	{
+		wxLogMessage("Connecting to Marker Detector...\n");
+		if (comm_connect(&m_commState, true))
+		{
+			wxLogMessage("Connected to Marker Detector!\n");
+			// Connected, now create resources and create window
+			MarkerDetector cam = {};
+			cam.frame = new CameraFrame("MakersVR MarkerDetector View");
+			m_markerDetectors.push_back(cam);
+			m_state = STATE_Connected;
+		}
+		else
+		{
+			wxLogMessage("Failed to connect to Marker Detector!\n");
+		}
+	}
+	else
+	{
+		wxLogMessage("No Marker Detector connected!\n");
+	}
+}
+void ConfiguratorApp::Disconnect()
+{
+	if (m_state != STATE_Connected) return;
+	if (!m_commState.usbDeviceActive) return;
+	wxLogMessage("Disconnecting!\n");
+	// Disconnect device
+	comm_disconnect(&m_commState);
+	// Destroy windows
+	for (int i = 0; i < m_markerDetectors.size(); i++)
+	{
+		if (m_markerDetectors[i].frame != NULL)
+			m_markerDetectors[i].frame->Destroy();
+	}
+	// Cleanup resources
+	m_markerDetectors.clear();
+	m_state = STATE_Idle;
+}
+void ConfiguratorApp::StartTesting()
+{
+	Disconnect();
+	if (m_state == STATE_Testing) return;
+	wxLogMessage("Starting testing phase!\n");
+	// Add testing cameras
+	for (int i = 0; i < m_config.testing.cameraDefinitions.size(); i++)
+	{
+		MarkerDetector cam = {};
+		cam.state.camera = {
+			m_config.testing.cameraDefinitions[i].pos,
+			m_config.testing.cameraDefinitions[i].rot
+		};
+		std::stringstream dbgPos, dbgRot;
+		dbgPos << cam.state.camera.pos.transpose();
+		dbgPos << getEulerXYZ(cam.state.camera.rot).transpose();
+		wxLogMessage("Cam %s Pos: %s, Rot: %s\n", m_config.testing.cameraDefinitions[i].label, dbgPos.str(), dbgRot.str());
+		cam.frame = new CameraFrame(m_config.testing.cameraDefinitions[i].label);
+		m_markerDetectors.push_back(cam);
+	}
+	// Start test data thread
+	runTestThread = true;
+	if (testThread == NULL) testThread = new std::thread(ThreadSendTestData);
+	m_state = STATE_Testing;
+}
+void ConfiguratorApp::StopTesting()
+{
+	if (m_state != STATE_Testing) return;
+	wxLogMessage("Stop testing phase!\n");
+	// Join thread
+	runTestThread = false;
+	if (testThread != NULL && testThread->joinable()) testThread->join();
+	testThread = NULL;
+	// Destroy test windows
+	for (int i = 0; i < m_markerDetectors.size(); i++)
+	{
+		if (m_markerDetectors[i].frame != NULL)
+			m_markerDetectors[i].frame->Destroy();
+	}
+	// Cleanup resources
+	m_markerDetectors.clear();
+	m_state = STATE_Idle;
+}
+void ConfiguratorApp::OnCloseCameraFrame(CameraFrame *frame)
+{
+	// Remove the closed camera frame
+	int remaining = 0;
+	for (int i = 0; i < m_markerDetectors.size(); i++)
+	{
+		if (m_markerDetectors[i].frame == frame)
+			m_markerDetectors[i].frame = NULL;
+		else if (m_markerDetectors[i].frame != NULL)
+			remaining++;
+	}
+	if (remaining == 0)
+	{ // Return to idle state
+		Disconnect();
+		StopTesting();
+	}
 }
 
 // ----------------------------------------------------------------------------
 // ConfiguratorFrame
 // ----------------------------------------------------------------------------
 
-const int testFrameRate = 10;
-static bool runTestThread;
-static void ThreadSendTestData() 
-{
-	int index = 0;
-	while (runTestThread)
-	{
-//		if (++index >= (1000/testFrameRate)-1)
-		{
-			index = 0;
-			
-			BlobFrame *blobFrame = wxGetApp().m_frame->m_blobFrames[0];
-			if (blobFrame == NULL)
-			{
-				wxGetApp().m_frame->m_blobFrames.clear();
-				continue;
-			}
-
-			BlobCanvas *blobCanvas = blobFrame->m_blobCanvas;
-
-			// Generate blobs
-//			int blobCount = 4;
-
-			// Update list of blobs
-			/*blobCanvas->m_blobs.resize(blobCount);
-			for (int i = 0; i < blobCount; i++)
-			{
-				Point *point = &blobCanvas->m_blobs[i];
-				point->X = (rand() % 10000) / 10000.0f;
-				point->Y = (rand() % 10000) / 10000.0f;
-				point->S = (rand() % 100) / 10.0f;
-				//col = data[pos+5];
-			}*/
-			
-			// Create random Ground Truth transform
-			static double TGT[3] { 0, 0, 40 };
-			static double RGT[3] { 0, 0, 20 };
-			static const float PI = 3.14159265358979323846f;
-
-			/*TGT[2] = (rand()%10000 / 10000.0f) * 200 + 20;
-			TGT[0] = (rand()%10000 / 10000.0f) * TGT[2]/2 - TGT[2]/4;
-			TGT[1] = (rand()%10000 / 10000.0f) * TGT[2]/2 - TGT[2]/4;
-			RGT[0] = (rand()%10000 / 10000.0f) * 100 - 50;
-			RGT[1] = (rand()%10000 / 10000.0f) * 100 - 50;
-			RGT[2] = (rand()%10000 / 10000.0f) * 100 - 50;*/
-
-			static double TD[3] { 0, 0, 0 };
-			static double RD[3] { 0, 0, 0 };
-			TD[2] += (rand()%10000 / 10000.0f) * 0.1 - 0.05;
-			TD[0] += (rand()%10000 / 10000.0f) * 0.1 - 0.05;
-			TD[1] += (rand()%10000 / 10000.0f) * 0.1 - 0.05;
-			RD[0] += ((rand()%10000 / 10000.0f) * 2 - 1);
-			RD[1] += ((rand()%10000 / 10000.0f) * 2 - 1);
-			RD[2] += ((rand()%10000 / 10000.0f) * 2 - 1);
-			TD[0] *= 0.8;
-			TD[1] *= 0.8;
-			TD[2] *= 0.8;
-			RD[0] *= 0.9;
-			RD[1] *= 0.9;
-			RD[2] *= 0.9;
-			TGT[0] += TD[0];
-			TGT[1] += TD[1];
-			TGT[2] += TD[2];
-			RGT[0] += RD[0];
-			RGT[1] += RD[1];
-			RGT[2] += RD[2];
-
-
-			// Project into camera view
-			projectMarker(blobCanvas->m_blobs, TGT, RGT, 1.0f);
-
-			//wxLogMessage("GT T: (%.1f, %.1f, %.1f)  R: (%.1f, %.1f, %.1f) \n", TGT[0], TGT[1], TGT[2], RGT[0], RGT[1], RGT[2]);
-
-			// Create CV 2D array of marker points
-			/*std::vector<cv::Point2f> marker2D;
-			marker2D.resize(blobCanvas->m_blobs.size());
-			for (int i = 0; i < blobCanvas->m_blobs.size(); i++)
-			{
-				marker2D[i].x = blobCanvas->m_blobs[i].X;
-				marker2D[i].y = blobCanvas->m_blobs[i].Y;
-			}*/
-
-//			wxLogMessage("Blobs: %d, M2D: %d, M3D: %d \n", (int)blobCanvas->m_blobs.size(), (int)marker2D.size(), (int)marker3DTemplate.size());
-
-			// Create CV 2D array of marker points
-			/*std::vector<cv::Point2f> marker2D {
-				cv::Point2f(blobCanvas->m_blobs[0].X, blobCanvas->m_blobs[0].Y),
-				cv::Point2f(blobCanvas->m_blobs[1].X, blobCanvas->m_blobs[1].Y),
-				cv::Point2f(blobCanvas->m_blobs[2].X, blobCanvas->m_blobs[2].Y),
-				cv::Point2f(blobCanvas->m_blobs[3].X, blobCanvas->m_blobs[3].Y)
-			};*/
-
-			//blobCanvas->m_poses.clear();
-			//Pose pose;
-			//inferMarkerPose(blobCanvas->m_blobs, pose);
-
-			// use solvePnP to recreate rotation and translation
-			//cv::solvePnP(marker3DTemplate, marker2D, camMat, distort, rotation, translation, false, cv::SOLVEPNP_ITERATIVE);
-			//rotation = rotation * (180.0f/PI);
-			//translation = translation;
-
-			// Found marker pose using CV, check against GT (ground truth)
-			/*double TCV[3] { (double)translation(0), (double)translation(1), (double)translation(2) };
-			double RCV[3] { (double)rotation(0), (double)std::abs(rotation(1)), (double)rotation(2) };
-			wxLogMessage("CV T: (%.1f, %.1f, %.1f)  R: (%.1f, %.1f, %.1f) \n", TCV[0], TCV[1], TCV[2], RCV[0], RCV[1], RCV[2]);
-			wxLogMessage("Error T: (%.1f, %.1f, %.1f)  R: (%.1f, %.1f, %.1f) \n", TCV[0]-TGT[0], TCV[1]-TGT[1], TCV[2]-TGT[2], RCV[0]-RGT[0], RCV[1]-RGT[1], RCV[2]-RGT[2]);
-		*/
-
-			// Get list of (potential) markers
-			findMarkerCandidates(blobCanvas->m_blobs, blobCanvas->m_markers, blobCanvas->m_freeBlobs);
-
-			// Infer the pose of these markers
-			inferMarkerPoses(blobCanvas->m_markers, blobCanvas->m_poses);
-
-			if (blobCanvas->m_poses.size() > 0)
-			{ // Found marker pose using CV, check against GT (ground truth)
-				double *TCV = blobCanvas->m_poses[0].translation;
-				double *RCV = blobCanvas->m_poses[0].rotation;
-				//wxLogMessage("CV T: (%.1f, %.1f, %.1f)  R: (%.1f, %.1f, %.1f) \n", TCV[0], TCV[1], TCV[2], RCV[0], RCV[1], RCV[2]);
-
-				//wxLogMessage("Error T: (%.1f, %.1f, %.1f)  R: (%.1f, %.1f, %.1f) \n", TCV[0]-TGT[0], TCV[1]-TGT[1], TCV[2]-TGT[2], RCV[0]-RGT[0], RCV[1]-RGT[1], RCV[2]-RGT[2]);
-			}
-			else
-			{
-				wxLogMessage("Failed to infer marker pose! \n");
-			}
-
-			blobFrame->SubmitBlobs();
-		}
-		std::this_thread::sleep_for(std::chrono::milliseconds((1000/testFrameRate)-1));
-	}
-}
-
 wxBEGIN_EVENT_TABLE(ConfiguratorFrame, wxFrame)
 EVT_MENU(ID_Connect, ConfiguratorFrame::OnConnect)
-EVT_MENU(ID_Test, ConfiguratorFrame::OnTest)
+EVT_MENU(ID_Test, ConfiguratorFrame::OnStartTesting)
 EVT_MENU(wxID_EXIT, ConfiguratorFrame::OnExit)
 EVT_MENU(wxID_ABOUT, ConfiguratorFrame::OnAbout)
+EVT_CLOSE(ConfiguratorFrame::OnClose)
 wxEND_EVENT_TABLE()
 
 ConfiguratorFrame::ConfiguratorFrame()
-	: wxFrame(NULL, wxID_ANY, "MakersVR Configurator", wxPoint(50, 50), wxSize(450, 340))
+	: wxFrame(NULL, wxID_ANY, "MakersVR Configurator", wxPoint(20, 20), wxSize(480, 360))
 {
-	// Setup interaction
-	wxMenu *menu = new wxMenu;
+	// Main layout
+	wxMenuBar *menuBar = new wxMenuBar;
+	wxMenu *menu = new wxMenu();
+	menuBar->Append(menu, "&Configurator");
+	SetMenuBar(menuBar);
+	CreateStatusBar();
+	wxTextCtrl *logText = new wxTextCtrl(this, -1, "MakersVR Configurator\n", wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE | wxTE_WORDWRAP | wxTE_READONLY);
+	wxLog::SetActiveTarget(new wxLogTextCtrl(logText));
+
+	// Setup menu dropdown
 	menu->Append(ID_Connect, "&Connect", "Start connecting to a device");
-	menu->Append(ID_Test, "&Test", "Start testing phase.");
+	menu->AppendSeparator();
+	menu->Append(ID_Test, "&Test Marker", "Start testing phase of selected marker.");
+	wxMenu *markerTestMenu = new wxMenu();
+	menu->AppendSubMenu(markerTestMenu, "&Markers", "Select a specific marker shape to test.");
 	menu->AppendSeparator();
 	menu->Append(wxID_ABOUT);
 	menu->AppendSeparator();
 	menu->Append(wxID_EXIT);
-	wxMenuBar *menuBar = new wxMenuBar;
-	menuBar->Append(menu, "&Configurator");
-	SetMenuBar(menuBar);
-	CreateStatusBar();
-	
-	logText = new wxTextCtrl(this, -1, "MakersVR Configurator - Log\n", wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE | wxTE_WORDWRAP | wxTE_READONLY);
-	wxLog::SetActiveTarget(new wxLogTextCtrl(logText));
+
+	// Fill marker selection
+	for (int i = 0; i < wxGetApp().m_markerData.size(); i++)
+	{
+		DefMarker *marker = &wxGetApp().m_markerData[i];
+		std::stringstream menuLabel;
+		menuLabel << "&" << marker->label;
+		markerTestMenu->Append(ID_Marker+i, menuLabel.str(), "Test this marker shape.");
+		Bind(wxEVT_COMMAND_MENU_SELECTED, &ConfiguratorFrame::OnSelectMarker, this, ID_Marker+i);
+		wxLogMessage("Read Marker '%s' with %d points! \n", marker->label, (int)marker->pts.size());
+	}
 
 	Show();
 }
+void ConfiguratorFrame::OnClose(wxCloseEvent& event)
+{
+	wxGetApp().StopTesting();
+	wxGetApp().Disconnect();
+	Destroy();
+}
 void ConfiguratorFrame::OnExit(wxCommandEvent &event)
 {
-	runTestThread = false;
-	if (testThread != NULL && testThread->joinable()) testThread->join();
-	for (int i = 0; i < m_blobFrames.size(); i++)
-	{
-		m_blobFrames[i]->Close();
-		delete m_blobFrames[i];
-	}
-	Close(true);
+	wxGetApp().StopTesting();
+	wxGetApp().Disconnect();
+	Destroy();
 }
 void ConfiguratorFrame::OnAbout(wxCommandEvent &event)
 {
-	wxMessageBox("MakersVR Configurator used to configure the MakersVR Tracking System",
+	wxMessageBox("MakersVR Configurator is used to configure the MakersVR Tracking System",
 				 "About MakersVR Configurator", wxOK | wxICON_INFORMATION);
 }
 void ConfiguratorFrame::OnConnect(wxCommandEvent &event)
 {
-	// Try to connect to usb Marker Detector
-	if (comm_check_device(&wxGetApp().m_commState))
-	{
-		wxLogMessage("Connecting to Marker Detector...\n");
-		if (comm_connect(&wxGetApp().m_commState, true))
-		{
-			SetStatusText("Connected to Marker Detector!");
-			wxLogMessage("Connected to Marker Detector!\n");
-			m_blobFrames.push_back(new BlobFrame());
-		}
-		else
-		{
-			wxLogMessage("Failed to connect to Marker Detector!\n");
-			SetStatusText("Failed to connect to Marker Detector!");
-		}
-	}
-	else
-	{
-		wxLogMessage("No Marker Detector connected!\n");
-		SetStatusText("No Marker Detector connected!");
-	}
+	wxGetApp().Connect();
 }
-void ConfiguratorFrame::OnTest(wxCommandEvent &event)
+void ConfiguratorFrame::OnDisconnect(wxCommandEvent &event)
 {
-	SetStatusText("Starting testing phase!");
-	wxLogMessage("Starting testing phase!\n");
-	m_blobFrames.push_back(new BlobFrame());
-	runTestThread = true;
-	if (testThread == NULL)
-		testThread = new std::thread(ThreadSendTestData);
+	wxGetApp().Disconnect();
+}
+void ConfiguratorFrame::OnStartTesting(wxCommandEvent &event)
+{
+	wxGetApp().StartTesting();
+}
+void ConfiguratorFrame::OnStopTesting(wxCommandEvent &event)
+{
+	wxGetApp().StopTesting();
+}
+void ConfiguratorFrame::OnSelectMarker(wxCommandEvent &event)
+{
+	int markerID = event.GetId()-ID_Marker;
+	DefMarker *marker = &wxGetApp().m_markerData.at(markerID);
+	wxLogMessage("Set testing marker to '%s' with %d points!\n", marker->label, (int)marker->pts.size());
+	setActiveMarkerData(*marker);
 }
 
 // ----------------------------------------------------------------------------
 // GLContext
 // ----------------------------------------------------------------------------
 
-static void CheckGLError()
+static bool assureGLInit()
 {
-	GLenum errLast = GL_NO_ERROR;
-	for (;;)
-	{
-		GLenum err = glGetError();
-		if (err == GL_NO_ERROR) return;
-
-		// normally the error is reset by the call to glGetError() but if
-		// glGetError() itself returns an error, we risk looping forever here
-		// so check that we get a different error than the last time
-		if (err == errLast)
-		{
-			wxLogError("OpenGL error state couldn't be reset.\n");
-			return;
-		}
-
-		errLast = err;
-		wxLogError("OpenGL error %d\n", err);
-	}
-}
-static bool GLInit = false;
-static void assureGLInit()
-{
+	static bool GLInit = false;
 	if (!GLInit)
 	{
-		GLInit = true;
-
 		// GLEW Init
 		GLenum err = glewInit();
 		if (GLEW_OK != err)
 		{
 			wxLogError("GLEW Init Error %d: %s\n", err, glewGetErrorString(err));
+			return false;
 		}
-		wxLogMessage("GLEW Init Status: Using GLEW %s\n", glewGetString(GLEW_VERSION));
 
 		// Init pose inference
 		initPoseInference(camWidth, camHeight);
+
+		GLInit = true;
 	}
+	return GLInit;
 }
 static void assureGLClean()
 {
-	if (GLInit)
-	{
-		GLInit = false;
-		// Clean pose inference
-		cleanPoseInference();
-	}
-} 
-
-GLContext::GLContext(wxGLCanvas *canvas)
-	: wxGLContext(canvas)
-{
-	SetCurrent(*canvas);
-
-	// Setup if needed
-
-	CheckGLError();
+	// Clean pose inference
+	cleanPoseInference();
 }
 
 // ----------------------------------------------------------------------------
-// BlobFrame
-// ----------------------------------------------------------------------------
-// Seperate window to show a camera's blobs view
-
-wxBEGIN_EVENT_TABLE(BlobFrame, wxFrame)
-EVT_MENU(wxID_EXIT, BlobFrame::OnExit)
-wxEND_EVENT_TABLE()
-
-BlobFrame::BlobFrame()
-	: wxFrame(NULL, wxID_ANY, "MakersVR Camera Blobs", wxDefaultPosition, wxDefaultSize)
-{
-	m_blobCanvas = new BlobCanvas(this);
-	SetClientSize(camWidth/2, camHeight/2);
-	Show(true);
-}
-void BlobFrame::OnExit(wxCommandEvent &event)
-{
-	delete m_blobCanvas;
-	Close(true);
-}
-void BlobFrame::SubmitBlobs()
-{
-	// Store blobs and signal blobCanvas to repaint
-	m_blobCanvas->Refresh(true);
-}
-
-// ----------------------------------------------------------------------------
-// BlobCanvas
+// CameraFrame
 // ----------------------------------------------------------------------------
 
-wxBEGIN_EVENT_TABLE(BlobCanvas, wxGLCanvas)
-EVT_PAINT(BlobCanvas::OnPaint)
-EVT_KEY_DOWN(BlobCanvas::OnKeyDown)
-wxEND_EVENT_TABLE()
-
-BlobCanvas::BlobCanvas(wxWindow *parent)
-	// With perspective OpenGL graphics, the wxFULL_REPAINT_ON_RESIZE style
-	// flag should always be set, because even making the canvas smaller should
-	// be followed by a paint event that updates the entire canvas with new
-	// viewport settings.
-	: wxGLCanvas(parent, wxID_ANY, NULL,
-				 wxDefaultPosition, wxDefaultSize,
-				 wxFULL_REPAINT_ON_RESIZE | wxBORDER_NONE)
+CameraFrame::CameraFrame(std::string name = "MakersVR Camera View")
+	: wxFrame(NULL, wxID_ANY, name)
 {
+	SetClientSize(camWidth/4, camHeight/4);
+	Bind(wxEVT_CLOSE_WINDOW, &CameraFrame::OnClose, this);
+	m_canvas = new wxGLCanvas(this, wxID_ANY, NULL, wxDefaultPosition, wxDefaultSize, wxFULL_REPAINT_ON_RESIZE | wxBORDER_NONE);
+	m_canvas->Bind(wxEVT_PAINT, &CameraFrame::OnPaint, this);
+	m_canvas->Bind(wxEVT_KEY_DOWN, &CameraFrame::OnKeyDown, this);
+	Show();
 }
-
-void BlobCanvas::OnPaint(wxPaintEvent &WXUNUSED(event))
+void CameraFrame::OnClose(wxCloseEvent& event)
 {
-	wxPaintDC dc(this);
-	GLContext &context = wxGetApp().GetContext(this);
-	assureGLInit();
+	wxGetApp().OnCloseCameraFrame(this);
+	Destroy();
+}
+void CameraFrame::Repaint()
+{
+	m_canvas->Refresh();
+}
+void CameraFrame::OnPaint(wxPaintEvent &WXUNUSED(event))
+{
+	wxPaintDC dc(m_canvas);
+	wxGetApp().GetContext(m_canvas)->SetCurrent(*m_canvas);
+	if (!assureGLInit()) return;
 
 	const wxSize ClientSize = GetClientSize() * GetContentScaleFactor();
 	glViewport(0, 0, ClientSize.x, ClientSize.y);
+	glClearColor(0.0, 0.0, 0.0, 0.0);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	
+	CameraState *camState = wxGetApp().GetCameraState(this);
+	visualizePoses(camState->camera, camState->blobs, camState->m_markers, camState->poses);
 
-	visualizePoses(m_blobs, m_markers, m_poses);
-
-	CheckGLError();
 	glFlush();
-	SwapBuffers();
+	m_canvas->SwapBuffers();
 }
 
-void BlobCanvas::OnKeyDown(wxKeyEvent &event)
+static double TGT[3] { 0, 0, 100 };
+static double RGT[3] { 0, 0, 0 };
+static double TD[3] { 0, 0, 0 };
+static double RD[3] { 0, 0, 0 };
+const float dA = 5, dX = 10;
+void CameraFrame::OnKeyDown(wxKeyEvent &event)
 {
+	CameraState *camState = wxGetApp().GetCameraState(this);
 	switch (event.GetKeyCode())
 	{
-	case WXK_SPACE:
-
+	// Target Marker Rotation
+	case 'q': case 'Q':
+		RGT[2] += dA/180.0f*PI;
+		break;
+	case 'e': case 'E':
+		RGT[2] -= dA/180.0f*PI;
+		break;
+	case 'w': case 'W':
+		RGT[0] -= dA/180.0f*PI;
+		break;
+	case 's': case 'S':
+		RGT[0] += dA/180.0f*PI;
+		break;
+	case 'a': case 'A':
+		RGT[1] -= dA/180.0f*PI;
+		break;
+	case 'd': case 'D':
+		RGT[1] += dA/180.0f*PI;
+		break;
+	// Target Marker Position
+	case WXK_UP:
+		TGT[1] += dX;
+		break;
+	case WXK_DOWN:
+		TGT[1] -= dX;
+		break;
+	case WXK_LEFT:
+		TGT[0] -= dX;
+		break;
+	case WXK_RIGHT:
+		TGT[0] += dX;
+		break;
+	case WXK_PAGEUP:
+		TGT[2] += dX;
+		break;
+	case WXK_PAGEDOWN:
+		TGT[2] -= dX;
+		break;
+	// Camera Position
+	case 'i': case 'I':
+		camState->camera.pos.z() -= dX;
+		break;
+	case 'k': case 'K':
+		camState->camera.pos.z() += dX;
+		break;
+	case 'j': case 'J':
+		camState->camera.pos.x() -= dX;
+		break;
+	case 'l': case 'L':
+		camState->camera.pos.x() += dX;
+		break;
+	// Camera Rotation
+	case 't': case 'T':
+		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(+dA/180.0f*PI, 0, 0));
+		break;
+	case 'g': case 'G':
+		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(-dA/180.0f*PI, 0, 0));
+		break;
+	case 'h': case 'H':
+		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(0, +dA/180.0f*PI, 0));
+		break;
+	case 'f': case 'F':
+		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(0, -dA/180.0f*PI, 0));
+		break;
+	case 'r': case 'R':
+		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(0, 0, +dA/180.0f*PI));
+		break;
+	case 'z': case 'Z':
+		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(0, 0, -dA/180.0f*PI));
 		break;
 	default:
 		event.Skip();
@@ -435,9 +473,109 @@ void BlobCanvas::OnKeyDown(wxKeyEvent &event)
 	}
 }
 
+// ----------------------------------------------------------------------------
+// Test Data Thread
+// ----------------------------------------------------------------------------
 
+static void ThreadSendTestData() 
+{
+	int index = 0;
+	ConfiguratorApp *app = &wxGetApp();
+	while (app->runTestThread)
+	{
+//		if (++index >= (1000/testFrameRate)-1)
+		{
+			index = 0;
 
+			// Create random Ground Truth transform
 
+			// Generate completely random poses
+			/*TGT[2] = (rand()%10000 / 10000.0f) * 200 + 20;
+			TGT[0] = (rand()%10000 / 10000.0f) * TGT[2]/2 - TGT[2]/4;
+			TGT[1] = (rand()%10000 / 10000.0f) * TGT[2]/2 - TGT[2]/4;
+			RGT[0] = (rand()%10000 / 10000.0f) * 100 - 50;
+			RGT[1] = (rand()%10000 / 10000.0f) * 100 - 50;
+			RGT[2] = (rand()%10000 / 10000.0f) * 100 - 50;*/
+
+			// Generate consistently moving pose
+			TD[2] += (rand()%10000 / 10000.0f) * 0.1 - 0.05;
+			TD[0] += (rand()%10000 / 10000.0f) * 0.1 - 0.05;
+			TD[1] += (rand()%10000 / 10000.0f) * 0.1 - 0.05;
+			RD[0] += ((rand()%10000 / 10000.0f) * 2 - 1);
+			RD[1] += ((rand()%10000 / 10000.0f) * 2 - 1);
+			RD[2] += ((rand()%10000 / 10000.0f) * 2 - 1);
+			// Dampen movement
+			TD[0] *= 0.9;
+			TD[1] *= 0.9;
+			TD[2] *= 0.9;
+			RD[0] *= 0.95;
+			RD[1] *= 0.95;
+			RD[2] *= 0.95;
+			// Apply movement
+			TGT[0] += TD[0];
+			TGT[1] += TD[1];
+			TGT[2] += TD[2];
+			RGT[0] += RD[0]/180.0f*PI;
+			RGT[1] += RD[1]/180.0f*PI;
+			RGT[2] += RD[2]/180.0f*PI;
+
+			// Transform to Eigen
+			Eigen::Vector3f tGT(TGT[0], TGT[1], TGT[2]);
+			Eigen::Matrix3f rGT = getRotationZYX(Eigen::Vector3f(RGT[0], RGT[1], RGT[2]));
+
+			for (int m = 0; m < wxGetApp().m_markerDetectors.size(); m++)
+			{
+				MarkerDetector *markerDetector = &wxGetApp().m_markerDetectors[m];
+				CameraState *camState = &markerDetector->state;
+
+				// Project into camera view
+				camState->blobs.clear();
+				createMarkerProjection(camState->blobs, camState->camera, tGT, rGT, 1.0f);
+
+				// Add origin for orientation
+				camState->poses.clear();
+				camState->poses.push_back({
+					NULL,
+					Eigen::Vector3f(0, 0, 0),
+					Eigen::Matrix3f::Identity(),
+				});
+
+				/* Generic Marker */
+				if (camState->blobs.size() >= getExpectedBlobCount())
+				{
+					Pose pose;
+					inferMarkerPoseGeneric(camState->blobs, camState->camera, pose);
+					camState->poses.push_back(pose);
+				}
+
+				/* Specific Marker */
+				// Get list of (potential) markers
+	//			findMarkerCandidates(camState->blobs, camState->m_markers, camState->m_freeBlobs);
+				// Infer the pose of these markers
+	//			inferMarkerPoses(camState->m_markers, camState->camera, camState->poses);
+
+				if (camState->poses.size() > 1)
+				{ // Found marker pose using CV, check against GT (ground truth)
+					Eigen::Vector3f tDiff = camState->poses[1].trans-tGT;
+					Eigen::Matrix3f rDiff = rGT * camState->poses[1].rot.transpose();
+					wxLogMessage(L"Cam %d: CV Translation Error: %fcm -- Angle Error: %f\u00B0 \n", m, tDiff.norm(), Eigen::AngleAxisf(rDiff).angle()/PI*180);
+				}
+				else
+				{
+					wxLogMessage("Cam %d: Failed to infer marker pose! \n", m);
+				}
+
+				if (markerDetector->frame != NULL)
+					markerDetector->frame->Repaint();
+			}
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds((1000/testFrameRate)-1));
+	}
+}
+
+// ----------------------------------------------------------------------------
+// USB Handlers
+// ----------------------------------------------------------------------------
 
 static void onControlResponse(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length)
 {
@@ -493,19 +631,14 @@ static void onIsochronousIN(uint8_t *data, int length)
 	blobUpdate++;
 	int blobCount = (length-headerSize) / 6;
 
-	BlobFrame *blobFrame = wxGetApp().m_frame->m_blobFrames[0];
-	if (blobFrame == NULL)
-	{
-		wxGetApp().m_frame->m_blobFrames.clear();
-		return;
-	}
-	BlobCanvas *blobCanvas = blobFrame->m_blobCanvas;
+	MarkerDetector *markerDetector = &wxGetApp().m_markerDetectors[0];
+	CameraState *camState = &markerDetector->state;
 
 	// Update list of blobs
-	blobCanvas->m_blobs.resize(blobCount);
+	camState->blobs.resize(blobCount);
 	for (int i = 0; i < blobCount; i++)
 	{
-		Point *point = &blobCanvas->m_blobs[i];
+		Point *point = &camState->blobs[i];
 		int pos = headerSize+i*6;
 		uint16_t *blobData = (uint16_t*)&data[pos];
 		point->X = (float)((double)blobData[0] / 65536.0 * camWidth);
@@ -515,12 +648,13 @@ static void onIsochronousIN(uint8_t *data, int length)
 	}
 	
 	// Get list of (potential) markers
-	findMarkerCandidates(blobCanvas->m_blobs, blobCanvas->m_markers, blobCanvas->m_freeBlobs);
+	findMarkerCandidates(camState->blobs, camState->m_markers, camState->m_freeBlobs);
 
 	// Infer the pose of these markers
-	inferMarkerPoses(blobCanvas->m_markers, blobCanvas->m_poses);
+	inferMarkerPoses(camState->m_markers, camState->camera, camState->poses);
 
-	blobFrame->SubmitBlobs();
+	if (markerDetector->frame != NULL)
+		markerDetector->frame->Repaint();
 
 #ifdef DEBUG_BLOBS_IN
 	if (blobCount > 0 || blobUpdate % 100 == 0)	

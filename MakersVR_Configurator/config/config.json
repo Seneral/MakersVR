@@ -1,0 +1,29 @@
+{
+	"testsetup" : {
+		"markers" : [
+			"config/MarkerDat_4Point.obj",
+			"config/MarkerDat_5Point.obj",
+			"config/MarkerDat_6Point.obj",
+			"config/MarkerDat_6PointCross.obj",
+			"config/MarkerDat_7Point.obj",
+			"config/MarkerDat_Torus.obj"
+		],
+		"cameras" : [
+			{
+				"label" : "Camera 1 Front Right",
+				"position" : "-1.65547 -1.94693 2.460",
+				"rotation" : "60.0 0.0 -40.0"
+			},
+			{
+				"label" : "Camera 2 Front Left",
+				"position" : "1.65547 -1.94693 2.460",
+				"rotation" : "60.0 0.0 40.0"
+			},
+			{
+				"label" : "Camera 3 Back",
+				"position" : "0.0 1.95684 2.45832",
+				"rotation" : "46.0 0.0 180.0"
+			}
+		]
+	}
+}
