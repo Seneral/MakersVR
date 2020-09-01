@@ -47,6 +47,7 @@
 
 #include <vector>
 #include <thread>
+#include <bitset>
 
 enum ConfiguratorState
 {
@@ -68,6 +69,7 @@ private:
 	void OnClose(wxCloseEvent& event);
 	void OnPaint(wxPaintEvent& event);
 	void OnKeyDown(wxKeyEvent &event);
+	void Render();
 };
 
 /**
@@ -76,11 +78,17 @@ private:
 typedef struct
 {
 	Transform camera;
-	std::vector<Point> blobs;
+	std::vector<Point> points2D;
 	std::vector<Pose> poses;
-	// Deprecated:
+	std::vector<Ray> rays3D;
+	// Currently not used
 	std::vector<Marker> m_markers;
 	std::vector<Point*> m_freeBlobs;
+	// Ground-Truth values used in testing
+	struct {
+		Transform cameraGT;
+		std::bitset<MAX_MARKER_POINTS> markerPtsVisible;
+	} testing;
 } CameraState;
 
 /**
@@ -126,6 +134,15 @@ public:
 	std::vector<DefMarker> m_markerData;
 	// MarkerDetector windows and their state
 	std::vector<MarkerDetector> m_markerDetectors;
+	std::vector<Ray> rays3D;
+	std::vector<TriangulatedPoint> points3D;
+	int nonconflictedCount;
+	std::vector<std::vector<int>> conflicts;
+	std::vector<Pose> poses3D;
+	struct {
+		std::vector<Eigen::Vector4f> triangulatedPoints3D;
+	} testing;
+
 	// Test thread
 	bool runTestThread;
 	std::thread *testThread;

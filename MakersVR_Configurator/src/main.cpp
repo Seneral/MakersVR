@@ -9,6 +9,7 @@
 #include <chrono>
 #include <atomic>
 #include <stdlib.h>
+#include <algorithm>
 
 #define MEASURE_RECEIVE_RATE
 //#define DEBUG_BLOBS_IN
@@ -40,10 +41,15 @@ static void assureGLClean();
 
 static void ThreadSendTestData();
 
-inline void printBuffer(uint8_t *buffer, uint8_t size)
+inline void printBuffer(std::stringstream &ss, uint8_t *buffer, uint8_t size)
 {
-	wxLogMessage("0x");
-	for (int i = 0; i < size; i++) wxLogMessage("%02X", buffer[i]);
+	ss << "0x";
+	ss.setf(std::ios_base::uppercase);
+	ss.fill('0');
+	ss.width(2);
+	ss.setf(std::ios_base::hex);
+	for (int i = 0; i < size; i++)
+		ss << buffer[i];
 }
 
 // ----------------------------------------------------------------------------
@@ -69,17 +75,15 @@ bool ConfiguratorApp::OnInit()
 	{
 		wxMessageOutput::Get()->Printf (wxT("Marker '%s' has %d points!"), m_markerData[i].label, (int)m_markerData[i].pts.size());
 	}*/
-	
-	// Set default 4-point marker
-	setActiveMarkerData({
-		"Default 4-Point",
-		{
-			{ Eigen::Vector3f( 0.0f, 0.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 120.0f }, // Center
-			{ Eigen::Vector3f( 4.0f, 0.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 120.0f }, // Right
-			{ Eigen::Vector3f(-4.0f, 0.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 120.0f }, // Left
-			{ Eigen::Vector3f( 0.0f, 4.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 120.0f }  // Header
-		}
-	});
+
+	if (m_config.testing.markerDefinitionFiles.size() > 0)
+	{ // Set first as default
+		setActiveMarkerData(m_markerData[0]);
+	}
+	else
+	{ // Set some default Marker
+		setActiveMarkerData({ "Default 1-Point", { { Eigen::Vector3f( 0.0f, 0.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 360.0f } } });
+	}
 
 	// Open main frame
 	m_frame = new ConfiguratorFrame();
@@ -121,7 +125,7 @@ void ConfiguratorApp::Connect()
 {
 	if (!SetupComm())
 	{
-		wxLogError("ERROR: Failed to setup communication system!\n");
+		wxLogError("ERROR: Failed to setup communication system!");
 		return;
 	}
 	StopTesting();
@@ -129,10 +133,10 @@ void ConfiguratorApp::Connect()
 	// Try to connect to usb Marker Detector
 	if (comm_check_device(&m_commState))
 	{
-		wxLogMessage("Connecting to Marker Detector...\n");
+		wxLogMessage("Connecting to Marker Detector...");
 		if (comm_connect(&m_commState, true))
 		{
-			wxLogMessage("Connected to Marker Detector!\n");
+			wxLogMessage("Connected to Marker Detector!");
 			// Connected, now create resources and create window
 			MarkerDetector cam = {};
 			cam.frame = new CameraFrame("MakersVR MarkerDetector View");
@@ -141,19 +145,19 @@ void ConfiguratorApp::Connect()
 		}
 		else
 		{
-			wxLogMessage("Failed to connect to Marker Detector!\n");
+			wxLogMessage("Failed to connect to Marker Detector!");
 		}
 	}
 	else
 	{
-		wxLogMessage("No Marker Detector connected!\n");
+		wxLogMessage("No Marker Detector connected!");
 	}
 }
 void ConfiguratorApp::Disconnect()
 {
 	if (m_state != STATE_Connected) return;
 	if (!m_commState.usbDeviceActive) return;
-	wxLogMessage("Disconnecting!\n");
+	wxLogMessage("Disconnecting!");
 	// Disconnect device
 	comm_disconnect(&m_commState);
 	// Destroy windows
@@ -170,19 +174,19 @@ void ConfiguratorApp::StartTesting()
 {
 	Disconnect();
 	if (m_state == STATE_Testing) return;
-	wxLogMessage("Starting testing phase!\n");
+	wxLogMessage("Starting testing phase!");
 	// Add testing cameras
 	for (int i = 0; i < m_config.testing.cameraDefinitions.size(); i++)
 	{
 		MarkerDetector cam = {};
-		cam.state.camera = {
+		cam.state.testing.cameraGT = {
 			m_config.testing.cameraDefinitions[i].pos,
 			m_config.testing.cameraDefinitions[i].rot
 		};
 		std::stringstream dbgPos, dbgRot;
-		dbgPos << cam.state.camera.pos.transpose();
-		dbgPos << getEulerXYZ(cam.state.camera.rot).transpose();
-		wxLogMessage("Cam %s Pos: %s, Rot: %s\n", m_config.testing.cameraDefinitions[i].label, dbgPos.str(), dbgRot.str());
+		dbgPos << cam.state.testing.cameraGT.pos.transpose();
+		dbgRot << getEulerXYZ(cam.state.testing.cameraGT.rot).transpose();
+		wxLogMessage("Cam %s Pos: %s, Rot: %s", m_config.testing.cameraDefinitions[i].label, dbgPos.str(), dbgRot.str());
 		cam.frame = new CameraFrame(m_config.testing.cameraDefinitions[i].label);
 		m_markerDetectors.push_back(cam);
 	}
@@ -194,7 +198,7 @@ void ConfiguratorApp::StartTesting()
 void ConfiguratorApp::StopTesting()
 {
 	if (m_state != STATE_Testing) return;
-	wxLogMessage("Stop testing phase!\n");
+	wxLogMessage("Stop testing phase!");
 	// Join thread
 	runTestThread = false;
 	if (testThread != NULL && testThread->joinable()) testThread->join();
@@ -270,7 +274,7 @@ ConfiguratorFrame::ConfiguratorFrame()
 		menuLabel << "&" << marker->label;
 		markerTestMenu->Append(ID_Marker+i, menuLabel.str(), "Test this marker shape.");
 		Bind(wxEVT_COMMAND_MENU_SELECTED, &ConfiguratorFrame::OnSelectMarker, this, ID_Marker+i);
-		wxLogMessage("Read Marker '%s' with %d points! \n", marker->label, (int)marker->pts.size());
+		wxLogMessage("Read Marker '%s' with %d points!", marker->label, (int)marker->pts.size());
 	}
 
 	Show();
@@ -312,7 +316,7 @@ void ConfiguratorFrame::OnSelectMarker(wxCommandEvent &event)
 {
 	int markerID = event.GetId()-ID_Marker;
 	DefMarker *marker = &wxGetApp().m_markerData.at(markerID);
-	wxLogMessage("Set testing marker to '%s' with %d points!\n", marker->label, (int)marker->pts.size());
+	wxLogMessage("Set testing marker to '%s' with %d points!", marker->label, (int)marker->pts.size());
 	setActiveMarkerData(*marker);
 }
 
@@ -329,7 +333,7 @@ static bool assureGLInit()
 		GLenum err = glewInit();
 		if (GLEW_OK != err)
 		{
-			wxLogError("GLEW Init Error %d: %s\n", err, glewGetErrorString(err));
+			wxLogError("GLEW Init Error %d: %s", err, glewGetErrorString(err));
 			return false;
 		}
 
@@ -353,9 +357,9 @@ static void assureGLClean()
 CameraFrame::CameraFrame(std::string name = "MakersVR Camera View")
 	: wxFrame(NULL, wxID_ANY, name)
 {
-	SetClientSize(camWidth/4, camHeight/4);
+	SetClientSize(camWidth/2, camHeight/2);
 	Bind(wxEVT_CLOSE_WINDOW, &CameraFrame::OnClose, this);
-	m_canvas = new wxGLCanvas(this, wxID_ANY, NULL, wxDefaultPosition, wxDefaultSize, wxFULL_REPAINT_ON_RESIZE | wxBORDER_NONE);
+	m_canvas = new wxGLCanvas(this, wxID_ANY, NULL, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
 	m_canvas->Bind(wxEVT_PAINT, &CameraFrame::OnPaint, this);
 	m_canvas->Bind(wxEVT_KEY_DOWN, &CameraFrame::OnKeyDown, this);
 	Show();
@@ -367,11 +371,12 @@ void CameraFrame::OnClose(wxCloseEvent& event)
 }
 void CameraFrame::Repaint()
 {
-	m_canvas->Refresh();
+	wxClientDC dc(m_canvas);
+	Render();
+//	m_canvas->Refresh(false);
 }
-void CameraFrame::OnPaint(wxPaintEvent &WXUNUSED(event))
+void CameraFrame::Render()
 {
-	wxPaintDC dc(m_canvas);
 	wxGetApp().GetContext(m_canvas)->SetCurrent(*m_canvas);
 	if (!assureGLInit()) return;
 
@@ -379,12 +384,18 @@ void CameraFrame::OnPaint(wxPaintEvent &WXUNUSED(event))
 	glViewport(0, 0, ClientSize.x, ClientSize.y);
 	glClearColor(0.0, 0.0, 0.0, 0.0);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	
-	CameraState *camState = wxGetApp().GetCameraState(this);
-	visualizePoses(camState->camera, camState->blobs, camState->m_markers, camState->poses);
 
-	glFlush();
+	CameraState *camState = wxGetApp().GetCameraState(this);
+//	visualizePoses(camState->camera, camState->points2D, camState->m_markers, camState->poses);
+	visualizeMarkers(camState->camera, camState->points2D, wxGetApp().rays3D, wxGetApp().points3D, wxGetApp().nonconflictedCount, wxGetApp().testing.triangulatedPoints3D, wxGetApp().poses3D);
+
+	//glFlush();
 	m_canvas->SwapBuffers();
+}
+void CameraFrame::OnPaint(wxPaintEvent &event)
+{
+	wxPaintDC dc(m_canvas);
+//	Render();
 }
 
 static double TGT[3] { 0, 0, 100 };
@@ -392,6 +403,7 @@ static double RGT[3] { 0, 0, 0 };
 static double TD[3] { 0, 0, 0 };
 static double RD[3] { 0, 0, 0 };
 const float dA = 5, dX = 10;
+static bool updateTestThread = true;
 void CameraFrame::OnKeyDown(wxKeyEvent &event)
 {
 	CameraState *camState = wxGetApp().GetCameraState(this);
@@ -471,21 +483,35 @@ void CameraFrame::OnKeyDown(wxKeyEvent &event)
 		event.Skip();
 		return;
 	}
+	updateTestThread = true;
 }
 
 // ----------------------------------------------------------------------------
 // Test Data Thread
 // ----------------------------------------------------------------------------
 
-static void ThreadSendTestData() 
+static void ThreadSendTestData()
 {
+	// Render all once at start, mostly to intitialize resources
+	for (int m = 0; m < wxGetApp().m_markerDetectors.size(); m++)
+	{
+		MarkerDetector *markerDetector = &wxGetApp().m_markerDetectors[m];
+		CameraState *camState = &markerDetector->state;
+		if (markerDetector->frame != NULL)
+			markerDetector->frame->Repaint();
+	}
+
 	int index = 0;
-	ConfiguratorApp *app = &wxGetApp();
-	while (app->runTestThread)
+	while (wxGetApp().runTestThread)
 	{
 //		if (++index >= (1000/testFrameRate)-1)
+//		if (updateTestThread)
 		{
+			updateTestThread = false;
 			index = 0;
+
+			// Reset 3d ray visualization
+			wxGetApp().rays3D.clear();
 
 			// Create random Ground Truth transform
 
@@ -523,48 +549,233 @@ static void ThreadSendTestData()
 			Eigen::Vector3f tGT(TGT[0], TGT[1], TGT[2]);
 			Eigen::Matrix3f rGT = getRotationZYX(Eigen::Vector3f(RGT[0], RGT[1], RGT[2]));
 
+			// For testing of triangulation only
+			std::vector<int> visibleCount;
+			visibleCount.resize(getExpectedBlobCount());
+
 			for (int m = 0; m < wxGetApp().m_markerDetectors.size(); m++)
 			{
 				MarkerDetector *markerDetector = &wxGetApp().m_markerDetectors[m];
 				CameraState *camState = &markerDetector->state;
 
-				// Project into camera view
-				camState->blobs.clear();
-				createMarkerProjection(camState->blobs, camState->camera, tGT, rGT, 1.0f);
-
 				// Add origin for orientation
 				camState->poses.clear();
 				camState->poses.push_back({
-					NULL,
 					Eigen::Vector3f(0, 0, 0),
 					Eigen::Matrix3f::Identity(),
 				});
 
-				/* Generic Marker */
-				if (camState->blobs.size() >= getExpectedBlobCount())
-				{
-					Pose pose;
-					inferMarkerPoseGeneric(camState->blobs, camState->camera, pose);
-					camState->poses.push_back(pose);
+				// Project marker into camera view (simulated test data)
+				camState->points2D.clear();
+				createMarkerProjection(camState->points2D, camState->testing.markerPtsVisible, camState->testing.cameraGT, tGT, rGT, 1.0f, 0.02f);
+
+				// For testing only, accumulate by how many cameras a point is seen to determine if it is useful for triangulation
+				for (int i = 0; i < camState->testing.markerPtsVisible.size(); i++)
+					visibleCount[i] += (int)camState->testing.markerPtsVisible[i];
+
+				// Assume perfect knowledge of camera position (TODO: infer using calibration)
+				camState->camera = camState->testing.cameraGT;
+
+				// Assume perfect order of image points
+				std::random_shuffle(camState->points2D.begin(), camState->points2D.end());
+
+				{ // Single camera pose estimation using OpenCV
+					// This will only be used for calibration later on
+
+					// Assume all points visible belong to singular marker (TODO: Marker detection and point ordering)
+	//				findMarkerCandidates(camState->points2D, camState->m_markers, camState->m_freeBlobs);
+
+					// Infer pose of generic marker under above assumptions
+					if (camState->points2D.size() >= getExpectedBlobCount())
+					{
+						Pose pose;
+						inferMarkerPoseGeneric(camState->points2D, camState->camera, pose);
+						camState->poses.push_back(pose);
+					}
+
+					// Infer pose of detected markers
+		//			inferMarkerPoses(camState->m_markers, camState->camera, camState->poses);
+
+					if (camState->poses.size() > 1)
+					{ // Found marker pose using CV, check against GT (ground truth)
+						Eigen::Vector3f tDiff = camState->poses[1].trans-tGT;
+						Eigen::Matrix3f rDiff = rGT * camState->poses[1].rot.transpose();
+						wxLogMessage(L"Cam %d: CV Translation Error: %fcm -- Angle Error: %f\u00B0", m, tDiff.norm(), Eigen::AngleAxisf(rDiff).angle()/PI*180);
+					}
 				}
 
-				/* Specific Marker */
-				// Get list of (potential) markers
-	//			findMarkerCandidates(camState->blobs, camState->m_markers, camState->m_freeBlobs);
-				// Infer the pose of these markers
-	//			inferMarkerPoses(camState->m_markers, camState->camera, camState->poses);
+				// Create 3D Rays for triangulation assuming calibrated camera
+				camState->rays3D.clear();
+				castRays(camState->points2D, camState->camera, camState->rays3D);
+				// Add to shared list for visualization only
+				wxGetApp().rays3D.insert(wxGetApp().rays3D.end(), camState->rays3D.begin(), camState->rays3D.end());
+			}
 
-				if (camState->poses.size() > 1)
-				{ // Found marker pose using CV, check against GT (ground truth)
-					Eigen::Vector3f tDiff = camState->poses[1].trans-tGT;
-					Eigen::Matrix3f rDiff = rGT * camState->poses[1].rot.transpose();
-					wxLogMessage(L"Cam %d: CV Translation Error: %fcm -- Angle Error: %f\u00B0 \n", m, tDiff.norm(), Eigen::AngleAxisf(rDiff).angle()/PI*180);
-				}
+			// For visualization, add points which could be triangulated to a list
+			std::bitset<MAX_MARKER_POINTS> triangulationMask;
+			for (int i = 0; i < visibleCount.size(); i++)
+				triangulationMask.set(i, visibleCount[i] >= 2);
+			transformMarkerPoints(wxGetApp().testing.triangulatedPoints3D, triangulationMask, tGT, rGT);
+
+			// Perform triangulation using 3D Rays
+			std::vector<std::vector<Ray>*> rayGroups;
+			for (int m = 0; m < wxGetApp().m_markerDetectors.size(); m++)
+				rayGroups.push_back(&wxGetApp().m_markerDetectors[m].state.rays3D);
+			wxGetApp().points3D.clear();
+			wxGetApp().conflicts.clear();
+			wxGetApp().nonconflictedCount = triangulateRayIntersections(rayGroups, wxGetApp().points3D, wxGetApp().conflicts, 0.01f);
+
+			// Detect markers in triangulated point cloud
+			wxGetApp().poses3D.clear();
+			detectMarkers3D(wxGetApp().points3D, wxGetApp().conflicts, wxGetApp().nonconflictedCount, wxGetApp().poses3D);
+
+			bool wrongPose = false;
+			if (wxGetApp().poses3D.size() > 0)
+			{
+				Pose *pose = &wxGetApp().poses3D[0];
+				Eigen::Vector3f tDiff = pose->trans - tGT;
+				Eigen::Matrix3f rDiff = rGT * pose->rot.transpose();
+				float tError = tDiff.norm(), rError = Eigen::AngleAxisf(rDiff).angle()/PI*180;
+				wxLogMessage(L"--> Pose Error: Pos %fcm -- Angle %f\u00B0", tError, rError);
+				if (tError > 1 || rError > 2) wrongPose = true;
+			}
+			else wrongPose = true;
+
+			if (wrongPose)
+			{
+				if (wxGetApp().poses3D.size() == 0)
+					wxLogMessage("Pose not detected! Had %d true triangulated marker points!", (int)wxGetApp().testing.triangulatedPoints3D.size());
 				else
+					wxLogMessage("Pose wrongly detected! Had %d true triangulated marker points!", (int)wxGetApp().testing.triangulatedPoints3D.size());
+
+				// Analyze with knowledge which triangulated points could be used for the marker detection
+				std::vector<int> relationMask;
+				relationMask.resize(getExpectedBlobCount());
+				std::vector<std::pair<int, float>> mk2trMap;
+				mk2trMap.resize(getExpectedBlobCount());
+				std::vector<PointRelation*> mkRelations;
+				Eigen::Isometry3f gt;
+				gt.linear() = rGT;
+				gt.translation() = tGT;
+				for (int i = 0; i < visibleCount.size(); i++)
 				{
-					wxLogMessage("Cam %d: Failed to infer marker pose! \n", m);
+					int mkPtA = i;
+
+					Eigen::Vector3f trPos = gt * marker3D.markerTemplate.pts[i].pos;
+					float trError = 9999.0f;
+					int trPt = -1;
+					for (int j = 0; j < wxGetApp().points3D.size(); j++)
+					{
+						float error = (wxGetApp().points3D[j].pos.head<3>() - trPos).norm();
+						if (error < trError)
+						{
+							trError = error;
+							trPt = j;
+						}
+					}
+
+					if (triangulationMask.test(mkPtA))
+					{
+						mk2trMap[i].first = trPt;
+						mk2trMap[i].second = trError;
+						wxLogMessage("Found matching Marker point %d => %d within %f cm!", i, trPt, trError);
+
+						for (int j = 0; j < marker3D.pointRelation[mkPtA].size(); j++)
+						{
+							int relInd = marker3D.pointRelation[mkPtA][j];
+							PointRelation *rel = &marker3D.relationDist[relInd];
+							int mkPtB = rel->pt1 == mkPtA? rel->pt2 : rel->pt1;
+							if (mkPtB > mkPtA && triangulationMask.test(mkPtB))
+							{ // rel could have been inferred in marker, as both points ARE in the triangulated Point Cloud
+								float minError = 3 * (0.01f + 0.01f);
+								auto mkRelRange = std::equal_range(marker3D.relationDist.begin(), marker3D.relationDist.end(), rel->distance, ErrorRangeComp(minError));
+								wxLogMessage("--> Relation (%d - %d) is in triangulated point cloud with minimum of %d candidates!", mkPtA, mkPtB, (int)std::distance(mkRelRange.first, mkRelRange.second));
+								mkRelations.push_back(rel);
+								if (relationMask[mkPtA] != 0 || relationMask[mkPtB] != 0)
+								{ // Found a triple of triangulated points, so a candidate SHOULD have been found
+									//wxLogMessage("!!!!!! ----> Triple Detected!");
+								}
+								relationMask[mkPtA]++;
+								relationMask[mkPtB]++;
+							}
+						}
+					}
+					else if (trError < 0.1f)
+					{ // Even though it should NOT be triangulated, there is a fake point in it
+						mk2trMap[i].first = trPt;
+						mk2trMap[i].second = trError;
+						wxLogMessage("!!!!!! Marker point %d has a fake triangulated point %d within %f cm!", i, trPt, trError);
+					}
 				}
 
+				for (int i = 0; i < mkRelations.size(); i++)
+				{
+					if (relationMask[mkRelations[i]->pt1] > 1)
+					{
+						int mkPtJ = mkRelations[i]->pt1;
+						int mkPtB = mkRelations[i]->pt2;
+						for (int j = 0; j < mkRelations.size(); j++)
+						{
+							if (mkRelations[j]->pt1 == mkPtJ || mkRelations[j]->pt2 == mkPtJ)
+							{
+								int mkPtA = mkRelations[j]->pt1 == mkPtJ? mkRelations[j]->pt2 : mkRelations[j]->pt1;
+								if (mkPtA == mkPtB) continue;
+								bool sharedArm = false;
+								for (int l = 0; l < marker3D.pointRelation[mkPtA].size(); l++)
+									if (sharedArm = (marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt1 == mkPtB || marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt2 == mkPtB))
+										break;
+
+								wxLogMessage("Found triple (%d - %d / %f - %f), (%d - %d / %f - %f), (%d - %d / %f - %f)! B-A have shared arm: %s!",
+									mkPtB, mk2trMap[mkPtB].first, mk2trMap[mkPtB].second, 3*wxGetApp().points3D[mk2trMap[mkPtB].first].error,
+									mkPtJ, mk2trMap[mkPtJ].first, mk2trMap[mkPtJ].second, 3*wxGetApp().points3D[mk2trMap[mkPtJ].first].error,
+									mkPtA, mk2trMap[mkPtA].first, mk2trMap[mkPtA].second, 3*wxGetApp().points3D[mk2trMap[mkPtA].first].error,
+									sharedArm? "True" : "False");
+
+							}
+						}
+					}
+					else if (relationMask[mkRelations[i]->pt2] > 1)
+					{
+						int mkPtJ = mkRelations[i]->pt2;
+						int mkPtB = mkRelations[i]->pt1;
+						for (int j = 0; j < mkRelations.size(); j++)
+						{
+							if (mkRelations[j]->pt1 == mkPtJ || mkRelations[j]->pt2 == mkPtJ)
+							{
+								int mkPtA = mkRelations[j]->pt1 == mkPtJ? mkRelations[j]->pt2 : mkRelations[j]->pt1;
+								if (mkPtA == mkPtB) continue;
+								bool sharedArm = false;
+								for (int l = 0; l < marker3D.pointRelation[mkPtA].size(); l++)
+									if (sharedArm = (marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt1 == mkPtB || marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt2 == mkPtB))
+										break;
+
+								wxLogMessage("Found triple (%d - %d / %f - %f), (%d - %d / %f - %f), (%d - %d / %f - %f)! B-A have shared arm: %s!",
+									mkPtB, mk2trMap[mkPtB].first, mk2trMap[mkPtB].second, 3*wxGetApp().points3D[mk2trMap[mkPtB].first].error,
+									mkPtJ, mk2trMap[mkPtJ].first, mk2trMap[mkPtJ].second, 3*wxGetApp().points3D[mk2trMap[mkPtJ].first].error,
+									mkPtA, mk2trMap[mkPtA].first, mk2trMap[mkPtA].second, 3*wxGetApp().points3D[mk2trMap[mkPtA].first].error,
+									sharedArm? "True" : "False");
+
+							}
+						}
+					}
+
+				}
+
+				// Interrupt
+				static int times = 0;
+				if (times++ < 5) wxMessageOutput::Get()->Printf (wxT("Failed to detect pose!"));
+			}
+
+			wxGetApp().poses3D.push_back({
+				Eigen::Vector3f(0, 0, 0),
+				Eigen::Matrix3f::Identity(),
+			});
+
+			// Start visualization
+			for (int m = 0; m < wxGetApp().m_markerDetectors.size(); m++)
+			{
+				MarkerDetector *markerDetector = &wxGetApp().m_markerDetectors[m];
+				CameraState *camState = &markerDetector->state;
 				if (markerDetector->frame != NULL)
 					markerDetector->frame->Repaint();
 			}
@@ -579,39 +790,40 @@ static void ThreadSendTestData()
 
 static void onControlResponse(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length)
 {
-	if (request == 0x01) 
+	if (request == 0x01)
 	{ // Debug Response
-		if (length != 0) 
+		if (length != 0)
 		{
-			//printf("DEBUG (%d): ", length);
-			//printBuffer(data, length);
-			//printf("\n");
+			//std::stringstream hexBuf;
+			//printBuffer(hexBuf, data, length);
+			//wxLogMessage("DEBUG (%d): %s", length, hexBuf.str());
 			for (int i = 0; i < length; i++) if (data[i] == 0) data[i] = '*';
 			data[length] = 0;
-			wxLogMessage("DEBUG (%d): %s \n", length, data);
+			wxLogMessage("DEBUG (%d): %s", length, data);
 		}
 	}
-	else 
+	else
 	{
-		wxLogMessage("Control Response %d (%d): ", request, length);
-		printBuffer(data, length);
-		wxLogMessage("\n");
+		std::stringstream hexBuf;
+		printBuffer(hexBuf, data, length);
+		wxLogMessage("Control Response %d (%d): %s", request, length, hexBuf.str());
+
 	}
 }
 
 static void onIsochronousIN(uint8_t *data, int length)
 {
-	
+
 #ifdef MEASURE_RECEIVE_RATE
 	g_receiveCount++;
 	auto now = std::chrono::high_resolution_clock::now();
-	//if (std::chrono::duration_cast<std::chrono::hours>(std::chrono::time_point<std::chrono::high_resolution_clock>::max() - g_lastReceiveTime).count() > 1) 
+	//if (std::chrono::duration_cast<std::chrono::hours>(std::chrono::time_point<std::chrono::high_resolution_clock>::max() - g_lastReceiveTime).count() > 1)
 	if (g_receiveCount > 10)
 	{
 		UpdateStatValue(&receiveRate, std::chrono::duration_cast<std::chrono::microseconds>(now - g_lastReceiveTime).count() / 1000.0);
 		if (g_receiveCount % 10 == 0)
 		{
-			wxLogMessage("Receive Rate: %.2fms +-%.2fms - Max %.2fms \n", receiveRate.avg, receiveRate.diff, receiveRate.max);
+			wxLogMessage("Receive Rate: %.2fms +-%.2fms - Max %.2fms", receiveRate.avg, receiveRate.diff, receiveRate.max);
 			receiveRate.max = 0;
 		}
 	}
@@ -619,11 +831,9 @@ static void onIsochronousIN(uint8_t *data, int length)
 #endif
 
 #ifdef DEBUG_TRANSFER_IN
-	wxLogMessage("Isochronous IN (%d): ", length);
-	data[length] = 0;
-	wxLogMessage("%.*s", length, (char*)data);
-	printBuffer(data, length);
-	wxLogMessage("\n");
+	std::stringstream hexBuf;
+	printBuffer(hexBuf, data, length);
+	wxLogMessage("Isochronous IN (%d): %.*s -- %s", length, length, (char*)data, hexBuf.str());
 #endif
 
 	const int headerSize = 8;
@@ -635,10 +845,10 @@ static void onIsochronousIN(uint8_t *data, int length)
 	CameraState *camState = &markerDetector->state;
 
 	// Update list of blobs
-	camState->blobs.resize(blobCount);
+	camState->points2D.resize(blobCount);
 	for (int i = 0; i < blobCount; i++)
 	{
-		Point *point = &camState->blobs[i];
+		Point *point = &camState->points2D[i];
 		int pos = headerSize+i*6;
 		uint16_t *blobData = (uint16_t*)&data[pos];
 		point->X = (float)((double)blobData[0] / 65536.0 * camWidth);
@@ -646,9 +856,9 @@ static void onIsochronousIN(uint8_t *data, int length)
 		point->S = (float)data[pos+4]/2.0f;
 		//col = data[pos+5];
 	}
-	
+
 	// Get list of (potential) markers
-	findMarkerCandidates(camState->blobs, camState->m_markers, camState->m_freeBlobs);
+	findMarkerCandidates(camState->points2D, camState->m_markers, camState->m_freeBlobs);
 
 	// Infer the pose of these markers
 	inferMarkerPoses(camState->m_markers, camState->camera, camState->poses);
@@ -657,18 +867,19 @@ static void onIsochronousIN(uint8_t *data, int length)
 		markerDetector->frame->Repaint();
 
 #ifdef DEBUG_BLOBS_IN
-	if (blobCount > 0 || blobUpdate % 100 == 0)	
+	if (blobCount > 0 || blobUpdate % 100 == 0)
 	{
-		wxLogMessage("Isochronous IN (%d) %.*s %d Blobs: ", length, headerSize, data, blobCount);
-//		printBuffer(data+headerSize, length-headerSize);
+		std::stringstream blobBuf;
+		blobBuf.setf(std::ios_base::fixed, std::ios_base::floatfield);
+		blobBuf.precision(1);
 		for (int i = 0; i < blobCount; i++)
 		{
 			int pos = headerSize+i*6;
 			uint16_t *blobData = (uint16_t*)&data[pos];
 			float posX = (double)blobData[0] / 65536.0, posY = (double)blobData[1] / 65536.0, size = (float)data[pos+4]/2, col = data[pos+5];
-			wxLogMessage("(%.1f, %.1f, %.1f) ", posX * 2048, posY * 2048, size);
+			blobBuf << "(" << posX * 2048 << ", " << posY * 2048 << ", " << size << ") ";
 		}
-		wxLogMessage("\n");
+		wxLogMessage("Isochronous IN (%d) %.*s %d Blobs: %s", length, headerSize, data, blobCount, blobBuf.str());
 	}
 #endif
 }
@@ -678,33 +889,33 @@ static void onInterruptIN(uint8_t *data, int length)
 #ifdef MEASURE_RECEIVE_RATE
 	g_receiveCount++;
 	auto now = std::chrono::high_resolution_clock::now();
-	//if (std::chrono::duration_cast<std::chrono::hours>(std::chrono::time_point<std::chrono::high_resolution_clock>::max() - g_lastReceiveTime).count() > 1) 
+	//if (std::chrono::duration_cast<std::chrono::hours>(std::chrono::time_point<std::chrono::high_resolution_clock>::max() - g_lastReceiveTime).count() > 1)
 	if (g_receiveCount > 10)
 	{
 		UpdateStatValue(&receiveRate, std::chrono::duration_cast<std::chrono::microseconds>(now - g_lastReceiveTime).count() / 1000.0);
 		if (g_receiveCount % 10 == 0)
 		{
-			wxLogMessage("Receive Rate: %.2fms (%.2fms +-%.2fms) - Max %.2fms \n", receiveRate.cur, receiveRate.avg, receiveRate.diff, receiveRate.max);
+			wxLogMessage("Receive Rate: %.2fms (%.2fms +-%.2fms) - Max %.2fms", receiveRate.cur, receiveRate.avg, receiveRate.diff, receiveRate.max);
 			receiveRate.max = 0;
 		}
 	}
 	g_lastReceiveTime = now;
 #endif
-	
+
 #ifdef DEBUG_TRANSFER_IN
-	wxLogMessage("Interrupt IN (%d): ", length);
-	printBuffer(data, length);
-	wxLogMessage("\n");
+	std::stringstream hexBuf;
+	printBuffer(hexBuf, data, length);
+	wxLogMessage("Interrupt IN (%d): %.*s -- %s", length, length, (char*)data, hexBuf.str());
 #endif
 
 #ifdef DEBUG_BLOBS_IN
 	if (length == 3 && data[0] == 'N' && data[1] == 'C' && data[2] == 'D')
 	{ // No connected detectors
-		wxLogMessage("Marker Tracker reports no connected Marker Detectors!\n");
+		wxLogMessage("Marker Tracker reports no connected Marker Detectors!");
 	}
 	else if (length == 3 && data[0] == 'S' && data[1] == 'T' && data[2] == 'L')
 	{ // No connected detectors
-		wxLogMessage("Marker Tracker reports stalled Marker Detectors!\n");
+		wxLogMessage("Marker Tracker reports stalled Marker Detectors!");
 	}
 	else
 	{
@@ -713,11 +924,11 @@ static void onInterruptIN(uint8_t *data, int length)
 		int blobCount = (length-4) / 6;
 		char message[5] = {0};
 		memcpy(message, data, 4);
-		if (blobCount > 0 || blobUpdate % 10 == 0)	
+		if (blobCount > 0 || blobUpdate % 10 == 0)
 		{
-			wxLogMessage("Interrupt IN (%d) %s %d Blobs: ", length, message, blobCount);
-			printBuffer(data+4, length-4);
-			wxLogMessage("\n");
+			std::stringstream hexBuf;
+			printBuffer(hexBuf, data+4, length-4);
+			wxLogMessage("Interrupt IN (%d) %s %d Blobs: %s", length, message, blobCount, hexBuf.str());
 		}
 	}
 #endif

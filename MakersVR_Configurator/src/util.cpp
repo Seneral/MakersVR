@@ -140,6 +140,7 @@ bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers)
 			// Calculate face center as average
 			pt.pos = pt.pos * 100.0f/count;
 			pt.nrm.normalize();
+			pt.fov = 160;
 			curGroup->pts.push_back(pt);
 		}
 		else if (header == "g")

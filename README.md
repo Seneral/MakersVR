@@ -17,11 +17,17 @@ The <i>Marker Detector</i> and <i>Marker Tracker</i> are working, and for the mo
   <br>
   The <i>Marker Detector</i> and <i>Marker Tracker</i> prototypes
 </p>
-The actual tracking system on the host PC is not yet done and will still require a lot of work. This is planned to be developed solely with software-generated data first, so it does not require the above prototype hardware to develop for fast iteration. Currently, I have a physical 4-point marker as seen below, but I am considering adapting a similar marker concept to the <a href="https://ar-tracking.com/products/markers-targets/markers/">ART System</a> with 3D-distances identifying each blob in addition to a fixed calibration pattern. <br>
+The actual tracking system on the host PC is not yet done and will still require a lot of work. This is planned to be developed solely with software-generated data first, so it does not require the above prototype hardware to develop for fast iteration. Plans are to use single-camera pose inference for calibration and multi-camera triangulation-based marker tracking for runtime use. <br>
 <p align="center">
   <img alt="Software Configurator of MakersVR" src="https://github.com/Seneral/MakersVR/raw/master/Design/SW_Configurator_Annotated.png" width="60%"/>
   <br>
-  The <i>Configurator</i> streaming Blobs from the Prototype Hardware
+  The <i>Configurator</i> streaming blobs from the Prototype Hardware
+</p>
+The marker detection in the multi-camera marker tracking will work similar to the <a href="https://ar-tracking.com/products/markers-targets/markers/">ART System</a>, with each 3D point identified based on the relations to it's neighbours within the marker. Currently, a basic version has been implemented with a marker setup similar to the WMR Controllers, not using any temporal information: <br>
+<p align="center">
+  <img alt="Multi-Camera Tracking" src="https://github.com/Seneral/MakersVR/raw/master/Design/Media/SW_Multi-Camera-Tracking.gif" width="40%"/>
+  <br>
+  Marker Tracking using triangulated points and identification based on distances
 </p>
 One hardware problem I'm still facing is the camera selection. The ecosystem of cameras for the Raspberry Pi is very limited, with the official modules having terribly low field of view, resulting in a smaller tracking volume, and most inofficial modules basing on the older camera module with much worse performance or a completely different chip altogether with questionable support. Currently, I'm seeing if the Official Camera Module V2 with limited Field of View is viable: <br>
 <p align="center">

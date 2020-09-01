@@ -7,12 +7,15 @@
 #ifndef DEF_POSE_INFERENCE
 #define DEF_POSE_INFERENCE
 
+#define MAX_MARKER_POINTS 64
+
 #include "util.h"
 
 #include "Eigen/Core"
 #include "Eigen/Geometry"
 
 #include <vector>
+#include <bitset>
 
 /*
  * Pose Inference
@@ -36,12 +39,8 @@ typedef struct Point{
 // Pose of LED marker
 typedef struct Pose
 {
-	Point *center;
 	Eigen::Vector3f trans;
 	Eigen::Matrix3f rot;
-	// TODO
-	// 3D AND 2D pixel space of all LEDs
-	// Need access to at least the center LED screen space position for color fetching later
 } Pose;
 
 typedef struct Marker
@@ -51,23 +50,6 @@ typedef struct Marker
 	Point *endB;
 	Point *header;
 } Marker;
-typedef struct MarkerCandidate
-{
-	uint8_t c;
-	uint8_t a;
-	uint8_t b;
-	uint8_t h;
-	float error;
-} MarkerCandidate;
-
-typedef struct LinePoint
-{
-	float X;
-	float Y;
-	float R;
-	float G;
-	float B;
-} LinePoint;
 
 typedef struct
 {
@@ -75,12 +57,56 @@ typedef struct
 	Eigen::Matrix3f rot;
 } Transform;
 
+typedef struct
+{
+	Eigen::Vector4f pos;
+	Eigen::Vector4f dir;
+	/* Exposed for performance reason, makes triangulateRayIntersections much easier */
+	int intersectionCount;
+	int conflictID; // if intersectionCount > 1
+} Ray;
+typedef struct
+{
+	Eigen::Vector4f pos;
+	float error; // If valid, how accurate
+	float confidence; // How likely to be valid
+} TriangulatedPoint;
+
+typedef struct PointRelation
+{
+	int pt1;
+	int pt2;
+	Eigen::Vector4f dir;
+	float distance;
+ } PointRelation;
+struct ErrorRangeComp {
+	float error;
+	ErrorRangeComp(float error) { this->error = error; }
+	bool operator() (const PointRelation& rel, float value);
+	bool operator() (float value, const PointRelation& rel);
+};
+
+typedef struct
+{
+	DefMarker markerTemplate;
+	std::vector<PointRelation> relationDist; // Shortest neighouring relations of all points, sorted by distance
+	std::vector<std::vector<int>> pointRelation; // Index of relations for each point
+} MarkerLookup;
+
+
+
+extern MarkerLookup marker3D;
+
+
 /* Functions */
 
 /*
  * Initialize resources for pose inference
  */
 void initPoseInference(int Width, int Height);
+
+
+/* ---- Single-Camera Pose Inference ---- */
 
 /*
  * Finds all (potential) marker and also returns all free (unassociated) blobs left (Deprecated)
@@ -95,12 +121,45 @@ void inferMarkerPoses(std::vector<Marker> &marker, const Transform &camera, std:
 /*
  * Infer the pose of a marker given it's image points and the known camera position to transform into world space
  */
-void inferMarkerPoseGeneric(std::vector<Point> &marker, const Transform &camera, Pose &pose);
+void inferMarkerPoseGeneric(std::vector<Point> &point2D, const Transform &camera, Pose &pose);
+
+
+/* ---- Multi-Camera Pose Inference ---- */
 
 /*
- * Visualize poses
+ * Infer the pose of a marker given it's image points and the known camera position to transform into world space
  */
-void visualizePoses(const Transform &camera, const std::vector<Point> &blobs, const std::vector<Marker> &marker, const std::vector<Pose> &poses);
+void castRays(const std::vector<Point> &point2D, const Transform &camera, std::vector<Ray> &rays3D);
+
+/*
+ * Calculate the intersection points between rays of separate groups
+ * Returns how many of the points are not conflicted (those are at the beginning of the array)
+ */
+int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::vector<TriangulatedPoint> &points3D, std::vector<std::vector<int>> &conflicts, float errorLimit);
+
+/*
+ * Detect Markers in the triangulated 3D Point cloud
+ */
+void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Pose> &poses3D);
+
+
+/* ---- General ---- */
+
+/*
+ * Visualize single-camera poses
+ */
+void visualizePoses(const Transform &camera, const std::vector<Point> &points2D, const std::vector<Marker> &markers2D, const std::vector<Pose> &poses3D);
+
+/*
+ * Visualize multi-camera triangulated markers
+ * points2D: Visible points projected into camera view
+ * rays3D: rays from all cameras
+ * points3D: Points triangulated from the algorithm, without conflicts first
+ * nonconflictedCount: Amount of nonconflicted points in points3D
+ * triangulatedPoints3D: Points which could have been triangulated (are visible from more than one camera) -- used for testing only
+ * poses3D: Inferred 3D poses
+ */
+void visualizeMarkers(const Transform &camera, const std::vector<Point> &points2D, const std::vector<Ray> &rays3D, const std::vector<TriangulatedPoint> &points3D, int nonconflictedCount, const std::vector<Eigen::Vector4f> &triangulatedPoints3D, const std::vector<Pose> &poses3D);
 
 /**
  * Cleanup of resources
@@ -120,6 +179,11 @@ int getExpectedBlobCount();
 /*
  * Projects marker into image plane provided translation in centimeters and rotation, as well as a camera position
  */
-void createMarkerProjection(std::vector<Point> &imagePoints, const Transform &camera, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float ptScale);
+void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER_POINTS> &mask, const Transform &camera, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float ptScale, float stdDeviation = 0.0f);
+
+/*
+ * Transforms marker points based on translation and rotation
+ */
+void transformMarkerPoints(std::vector<Eigen::Vector4f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation);
 
 #endif

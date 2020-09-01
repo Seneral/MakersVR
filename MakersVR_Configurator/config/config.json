@@ -1,12 +1,10 @@
 {
 	"testsetup" : {
 		"markers" : [
-			"config/MarkerDat_4Point.obj",
-			"config/MarkerDat_5Point.obj",
-			"config/MarkerDat_6Point.obj",
-			"config/MarkerDat_6PointCross.obj",
-			"config/MarkerDat_7Point.obj",
-			"config/MarkerDat_Torus.obj"
+			"config/Marker_WMRRing.obj",
+			"config/Marker_5Point.obj",
+			"config/Marker_6Point.obj",
+			"config/Marker_6PointSquare.obj"
 		],
 		"cameras" : [
 			{
