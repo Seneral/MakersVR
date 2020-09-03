@@ -34,6 +34,7 @@ struct Line2D
 
 Mesh *vizCoordCross;
 GLuint vizLinesVBO; // Line buffer for uploading visualization lines to GPU
+DefMarker calibMarker3D;
 
 
 /* Function */
@@ -67,22 +68,28 @@ void cleanTesting()
 }
 
 /**
- * Sets the specified marker data as the current target
+ * Sets the specified marker data as the current calibration target
  */
-void setActiveMarkerData(DefMarker markerData)
+void setActiveCalibrationMarker(const DefMarker &markerData)
 {
-	// TODO: Copy into custom structure with only 3D points to match calibrated marker data
-	marker3D.markerTemplate = markerData;
-
+	calibMarker3D = markerData;
 #ifdef USE_CV
 	cv_marker3DTemplate.clear();
 	for (int i = 0; i < markerData.pts.size(); i++)
 	{
-		DefMarkerPoint *pt = &marker3D.markerTemplate.pts[i];
+		const DefMarkerPoint *pt = &markerData.pts[i];
 		cv_marker3DTemplate.push_back(cv::Point3f(pt->pos.x(), pt->pos.y(), pt->pos.z()));
 	}
 #endif
+}
 
+/**
+ * Sets the specified marker data as the current tracking target
+ */
+void setActiveTrackingMarker(const DefMarker &markerData)
+{
+	// TODO: Copy into custom structure with only 3D points to match calibrated marker data
+	marker3D.markerTemplate = markerData;
 	// Setup lookup tables for quick marker identification
 	generateLookupTables(&marker3D);
 }
@@ -90,7 +97,7 @@ void setActiveMarkerData(DefMarker markerData)
 /**
  * Projects marker into image plane provided translation in centimeters and rotation, both relative to camera
  */
-void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER_POINTS> &mask, const Camera &camera, const Eigen::Isometry3f &transform, float ptScale, float stdDeviation)
+void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER_POINTS> &mask, const DefMarker &marker, const Camera &camera, const Eigen::Isometry3f &transform, float stdDeviation)
 {
 	// Create MVP in camera space, translation in centimeters
 	Eigen::Isometry3f mv = createViewMatrix(camera.transform) * transform;
@@ -100,10 +107,10 @@ void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER
     std::normal_distribution<float> noise(0, stdDeviation);
 	// Project each marker point into image space
 	points2D.clear();
-	for (int i = 0; i < marker3D.markerTemplate.pts.size(); i++)
+	for (int i = 0; i < marker.pts.size(); i++)
 	{
 		mask[i] = false;
-		DefMarkerPoint *markerPt = &marker3D.markerTemplate.pts[i];
+		const DefMarkerPoint *markerPt = &marker.pts[i];
 		// Calculate and clip marker points not facing the camera in regards to their field of view
 		Eigen::Vector3f ptNrm = (mv.linear() * markerPt->nrm).normalized();
 		Eigen::Vector3f viewNrm = (mv * markerPt->pos).normalized();
@@ -122,7 +129,7 @@ void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER
 		points2D.push_back({
 			(ptPos.x() + 1)/2 * camera.width + noiseX,
 			(ptPos.y() + 1)/2 * camera.height + noiseY,
-			ptScale * 100/transform.translation().z()
+			100/transform.translation().z()
 		});
 		mask[i] = true;
 	}
@@ -149,9 +156,9 @@ void analyzeTrackingAlgorithm(std::vector<int> &visibleCount, std::bitset<MAX_MA
 {
 	// Analyze with knowledge which triangulated points could be used for the marker detection
 	std::vector<int> relationMask;
-	relationMask.resize(getExpectedBlobCount());
+	relationMask.resize(marker3D.markerTemplate.pts.size());
 	std::vector<std::pair<int, float>> mk2trMap;
-	mk2trMap.resize(getExpectedBlobCount());
+	mk2trMap.resize(marker3D.markerTemplate.pts.size());
 	std::vector<PointRelation*> mkRelations;
 	
 	for (int i = 0; i < visibleCount.size(); i++)

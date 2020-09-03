@@ -40,7 +40,8 @@ typedef struct
 typedef struct
 {
 	struct {
-		std::vector<std::string> markerDefinitionFiles;
+		std::vector<DefMarker> calibrationMarkers;
+		std::vector<DefMarker> trackingMarkers;
 		std::vector<DefCamera> cameraDefinitions;
 	} testing;
 } Config;

@@ -1,10 +1,12 @@
 {
 	"testsetup" : {
-		"markers" : [
-			"config/Marker_WMRRing.obj",
+		"calibrationMarkers" : [
+			"config/Marker_6PointSquare.obj",
 			"config/Marker_5Point.obj",
-			"config/Marker_6Point.obj",
-			"config/Marker_6PointSquare.obj"
+			"config/Marker_6Point.obj"
+		],
+		"trackingMarkers" : [
+			"config/Marker_WMRRing.obj"
 		],
 		"cameras" : [
 			{

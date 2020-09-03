@@ -44,19 +44,37 @@ void parseConfigFile(std::string path, Config *config)
 	if (cfg.contains("testsetup"))
 	{
 		auto testsetup = cfg["testsetup"];
-		if (testsetup.contains("markers"))
+		if (testsetup.contains("calibrationMarkers"))
 		{
-			auto markers = testsetup["markers"];
+			std::vector<std::string> calibrationMarkerFiles;
+			auto markers = testsetup["calibrationMarkers"];
 			if (markers.is_array())
 			{
-				for (auto& md : markers) {
-					if (md.is_string()) config->testing.markerDefinitionFiles.push_back(md);
-				}
+				for (auto& md : markers)
+					if (md.is_string())
+						calibrationMarkerFiles.push_back(md);
 			}
 			else if (markers.is_string())
+				calibrationMarkerFiles.push_back(markers);
+			// Parse files
+			for (int i = 0; i < calibrationMarkerFiles.size(); i++)
+				parseMarkerDataFile(calibrationMarkerFiles[i], &config->testing.calibrationMarkers);
+		}
+		if (testsetup.contains("trackingMarkers"))
+		{
+			std::vector<std::string> trackingMarkerFiles;
+			auto markers = testsetup["trackingMarkers"];
+			if (markers.is_array())
 			{
-				config->testing.markerDefinitionFiles.push_back(markers);
+				for (auto& md : markers)
+					if (md.is_string())
+						trackingMarkerFiles.push_back(md);
 			}
+			else if (markers.is_string())
+				trackingMarkerFiles.push_back(markers);
+			// Parse files
+			for (int i = 0; i < trackingMarkerFiles.size(); i++)
+				parseMarkerDataFile(trackingMarkerFiles[i], &config->testing.trackingMarkers);
 		}
 		if (testsetup.contains("cameras"))
 		{

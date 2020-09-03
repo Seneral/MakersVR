@@ -91,7 +91,7 @@ void generateLookupTables(MarkerLookup *marker3D)
 	// Step 1: Create all relations
 	std::vector<PointRelation> relations;
 	relations.reserve(relUpperBound);
-	for (int i = 0; i < marker3D->markerTemplate.pts.size()-1; i++)
+	for (int i = 0; i < marker3D->markerTemplate.pts.size(); i++)
 	{
 		DefMarkerPoint *pt1 = &marker3D->markerTemplate.pts[i];
 		for (int j = i+1; j < marker3D->markerTemplate.pts.size(); j++)
@@ -495,11 +495,12 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 //	wxLogMessage("--------------");
 
 	// Step 1: Get closest neighbouring points for each point
-	float maxRelevantDistance = marker3D.relationDist[marker3D.relationDist.size()-1].distance + 0.1f;
+	float maxRelevantDistance = marker3D.relationDist.size() == 0? 0.0f : 
+		marker3D.relationDist[marker3D.relationDist.size()-1].distance + 0.1f;
 	float maxRelevantDistanceSq = maxRelevantDistance*maxRelevantDistance;
 	std::vector<std::vector<PointRelation>> trRelations;
 	trRelations.resize(points3D.size());
-	for (int i = 0; i < points3D.size()-1; i++)
+	for (int i = 0; i < points3D.size(); i++)
 	{
 		const TriangulatedPoint *pt1 = &points3D[i];
 		for (int j = i+1; j < points3D.size(); j++)
@@ -790,7 +791,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 	else
 	{ // No candidate at all
 		wxLogMessage("No candidate has been found! %d points, of those %d not conflicted", (int)points3D.size(), nonconflictedCount);
-		for (int i = 0; i < points3D.size()-1; i++)
+		for (int i = 0; i < points3D.size(); i++)
 		{
 			float min = 0, max = maxRelevantDistance;
 			if (trRelations[i].size() > 0)

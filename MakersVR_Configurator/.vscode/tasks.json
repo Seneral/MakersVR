@@ -10,61 +10,63 @@
 			]
 		}
 	},
-    "tasks": [
+	"tasks": [
 		{
 			"label": "MSVC NMAKE Build Release",
 			"type": "shell",
 			"command": "nmake",
 			"args": [
-/*				"/a",*/
 				"/NoLogo",
 				"/F",
-				"build/Makefile.vc",
+				"build/Makefile.vc"
 			],
-			"problemMatcher": ["$msCompile"],
-			"group": {
-				"kind": "build",
-				"isDefault": true
-			}
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
 		},
 		{
 			"label": "MSVC NMAKE Build Debug",
 			"type": "shell",
 			"command": "nmake",
 			"args": [
-/*				"/a",*/
 				"/NoLogo",
 				"/F",
 				"build/Makefile.vc",
-				"DEBUG=",
+				"DEBUG="
 			],
-			"problemMatcher": ["$msCompile"],
-			"group": "build"
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
 		},
-        {
-            "label": "Run Configurator",
-            "type": "shell",
-            "command": "${workspaceFolder}\\configurator.exe",
-            "args": [],
-            "group": {
-                "kind": "test",
-                "isDefault": true
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
-            }
-        },
-        {
-            "label": "Run Emulator",
-            "type": "shell",
-            "command": "${workspaceFolder}\\emulator.exe",
-            "args": [],
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
-            }
-        }
-    ]
+		{
+			"label": "Run Configurator",
+			"type": "shell",
+			"command": "${workspaceFolder}\\configurator.exe",
+			"args": [],
+			"group": {
+				"kind": "test",
+				"isDefault": true
+			},
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			}
+		},
+		{
+			"label": "Run Emulator",
+			"type": "shell",
+			"command": "${workspaceFolder}\\emulator.exe",
+			"args": [],
+			"group": "test",
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			}
+		}
+	]
 }

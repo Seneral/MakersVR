@@ -7,6 +7,8 @@
 #ifndef DEF_TESTING
 #define DEF_TESTING
 
+#define CAMERA_NOISE_STDDEV 0.02f
+
 #include "eigenutil.hpp"
 #include "tracking.hpp"
 #include "calibration.hpp"
@@ -17,6 +19,12 @@
 /*
  * Testing
  */
+
+
+/* Variables */
+
+extern DefMarker calibMarker3D;
+
 
 /* Functions */
 
@@ -31,14 +39,19 @@ void initTesting();
 void cleanTesting();
 
 /**
- * Sets the specified marker data as the current target
+ * Sets the specified marker data as the current calibration target
  */
-void setActiveMarkerData(DefMarker markerData);
+void setActiveCalibrationMarker(const DefMarker &markerData);
+
+/**
+ * Sets the specified marker data as the current tracking target
+ */
+void setActiveTrackingMarker(const DefMarker &markerData);
 
 /**
  * Projects marker into image plane provided translation in centimeters and rotation, as well as a camera position
  */
-void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER_POINTS> &mask, const Camera &camera, const Eigen::Isometry3f &transform, float ptScale, float stdDeviation = 0.0f);
+void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER_POINTS> &mask, const DefMarker &marker, const Camera &camera, const Eigen::Isometry3f &transform, float stdDeviation = 0.0f);
 
 /**
  * Transforms marker points based on translation and rotation
