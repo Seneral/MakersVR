@@ -340,5 +340,7 @@ int getExpectedBlobCount()
 {
 #ifdef USE_CV
 	return cv_marker3DTemplate.size() < 4? 4 : cv_marker3DTemplate.size();
+#else
+	return 0;
 #endif
 }

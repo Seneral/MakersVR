@@ -37,8 +37,9 @@
 enum ConfiguratorState
 {
 	STATE_Idle = 0,
-	STATE_Connected = 1,
-	STATE_Testing = 2
+	STATE_Connected,
+	STATE_TestingCalibration,
+	STATE_TestingTracking
 };
 
 /**
@@ -63,13 +64,15 @@ private:
  */
 typedef struct
 {
-	Camera camera;
+	Camera camera; // Calibration data
+	// Points2D input
 	std::vector<Point> points2D;
-	std::vector<Eigen::Isometry3f> poses;
-	std::vector<Ray> rays3D;
-	// Currently not used
+	// Single-Camera state (Calibration)
 	std::vector<Marker> m_markers;
 	std::vector<Point*> m_freeBlobs;
+	std::vector<Eigen::Isometry3f> poses;
+	// Multi-Camera state (Tracking)
+	std::vector<Ray> rays3D;
 	// Ground-Truth values used in testing
 	struct {
 		Eigen::Isometry3f cameraGT;
@@ -117,18 +120,18 @@ public:
 	CommState m_commState;
 	// Loaded config data
 	Config m_config;
-	std::vector<DefMarker> m_markerData;
 	// MarkerDetector windows and their state
 	std::vector<MarkerDetector> m_markerDetectors;
-	std::vector<Ray> rays3D;
+	// Triangulation state
 	std::vector<TriangulatedPoint> points3D;
 	int nonconflictedCount;
 	std::vector<std::vector<int>> conflicts;
 	std::vector<Eigen::Isometry3f> poses3D;
+	// Testing and visualization state
+	std::vector<Ray> rays3D;
 	struct {
 		std::vector<Eigen::Vector3f> triangulatedPoints3D;
 	} testing;
-
 	// Test thread
 	bool runTestThread;
 	std::thread *testThread;
@@ -141,7 +144,7 @@ public:
     bool SetupComm();
 	void Connect();
 	void Disconnect();
-	void StartTesting();
+	void StartTesting(enum ConfiguratorState testingMode);
 	void StopTesting();
 	void OnCloseCameraFrame(CameraFrame *frame);
 
