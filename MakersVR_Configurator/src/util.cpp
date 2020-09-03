@@ -5,6 +5,7 @@
  */
 
 #include "util.h"
+#include "eigenutil.hpp"
 
 #include "nlohmann/json.hpp"
 using json = nlohmann::json;
@@ -166,41 +167,3 @@ bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers)
 	return true;
 }
 
-
-/**
- * Return x,y,z angles in standard Blender notation, with the order in which they are applied being z,y,x
- */
-Eigen::Vector3f getEulerXYZ(const Eigen::Matrix3f &rotMat)
-{
-	Eigen::Vector3f eulerZYX = rotMat.eulerAngles(2,1,0); // Decompose in order z,y,x
-	return Eigen::Vector3f(eulerZYX[2], eulerZYX[1], eulerZYX[0]); // Swivel to get x,y,z values
-}
-/**
- * Return x,y,z angles in ZYX Blender notation, with the order in which they are applied being x,y,z
- */
-Eigen::Vector3f getEulerZYX(const Eigen::Matrix3f &rotMat)
-{
-	return rotMat.eulerAngles(0,1,2); // Decompose in order x,y,z
-}
-/**
- * Get rotation matrix from x,y,z angles in standard Blender notation, with the order in which they are applied being z,y,x
- */
-Eigen::Matrix3f getRotationXYZ(const Eigen::Vector3f &eulerAngles)
-{
-	return Eigen::Matrix3f(
-		  Eigen::AngleAxisf(eulerAngles.z(), Eigen::Vector3f::UnitZ())
-		* Eigen::AngleAxisf(eulerAngles.y(), Eigen::Vector3f::UnitY())
-		* Eigen::AngleAxisf(eulerAngles.x(), Eigen::Vector3f::UnitX())
-	);
-}
-/**
- * Get rotation matrix from x,y,z angles in ZYX Blender notation, with the order in which they are applied being x,y,z
- */
-Eigen::Matrix3f getRotationZYX(const Eigen::Vector3f &eulerAngles)
-{
-	return Eigen::Matrix3f(
-		  Eigen::AngleAxisf(eulerAngles.x(), Eigen::Vector3f::UnitX())
-		* Eigen::AngleAxisf(eulerAngles.y(), Eigen::Vector3f::UnitY())
-		* Eigen::AngleAxisf(eulerAngles.z(), Eigen::Vector3f::UnitZ())
-	);
-}

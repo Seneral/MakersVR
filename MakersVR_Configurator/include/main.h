@@ -9,30 +9,15 @@
 
 #include "util.h"
 #include "comm.h"
-#include "poseinference.hpp"
+#include "eigenutil.hpp"
+#include "testing.hpp"
+#include "calibration.hpp"
+#include "tracking.hpp"
 
 #include "GL/glew.h"
 
-// wxWidgets disable unused libs
-#define wxNO_NET_LIB
-#define wxNO_XML_LIB
-#define wxNO_EXPAT_LIB
-#define wxNO_REGEX_LIB
-#define wxNO_ZLIB_LIB
-#define wxNO_JPEG_LIB
-#define wxNO_PNG_LIB
-#define wxNO_TIFF_LIB
-#define wxNO_STC_LIB
-#define wxNO_HTML_LIB
-#define wxNO_QA_LIB
-#define wxNO_XRC_LIB
-#define wxNO_AUI_LIB
-#define wxNO_PROPGRID_LIB
-#define wxNO_RIBBON_LIB
-#define wxNO_RICHTEXT_LIB
-#define wxNO_MEDIA_LIB
-#define wxNO_WEBVIEW_LIB
 // wxWidgets minimal includes
+#include "wxbase.hpp" // Disables unused libs, and includes wx/log.h
 #include "wx/app.h"
 #include "wx/window.h"
 #include "wx/frame.h"
@@ -64,6 +49,7 @@ class CameraFrame : public wxFrame
 public:
 	CameraFrame(std::string name);
 	void Repaint();
+	void AssureInit();
 private:
 	wxGLCanvas *m_canvas;
 	void OnClose(wxCloseEvent& event);
@@ -77,16 +63,16 @@ private:
  */
 typedef struct
 {
-	Transform camera;
+	Camera camera;
 	std::vector<Point> points2D;
-	std::vector<Pose> poses;
+	std::vector<Eigen::Isometry3f> poses;
 	std::vector<Ray> rays3D;
 	// Currently not used
 	std::vector<Marker> m_markers;
 	std::vector<Point*> m_freeBlobs;
 	// Ground-Truth values used in testing
 	struct {
-		Transform cameraGT;
+		Eigen::Isometry3f cameraGT;
 		std::bitset<MAX_MARKER_POINTS> markerPtsVisible;
 	} testing;
 } CameraState;
@@ -138,9 +124,9 @@ public:
 	std::vector<TriangulatedPoint> points3D;
 	int nonconflictedCount;
 	std::vector<std::vector<int>> conflicts;
-	std::vector<Pose> poses3D;
+	std::vector<Eigen::Isometry3f> poses3D;
 	struct {
-		std::vector<Eigen::Vector4f> triangulatedPoints3D;
+		std::vector<Eigen::Vector3f> triangulatedPoints3D;
 	} testing;
 
 	// Test thread

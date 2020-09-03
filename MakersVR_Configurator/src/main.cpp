@@ -179,13 +179,10 @@ void ConfiguratorApp::StartTesting()
 	for (int i = 0; i < m_config.testing.cameraDefinitions.size(); i++)
 	{
 		MarkerDetector cam = {};
-		cam.state.testing.cameraGT = {
-			m_config.testing.cameraDefinitions[i].pos,
-			m_config.testing.cameraDefinitions[i].rot
-		};
+		cam.state.testing.cameraGT = createModelMatrix(m_config.testing.cameraDefinitions[i].pos, m_config.testing.cameraDefinitions[i].rot);
 		std::stringstream dbgPos, dbgRot;
-		dbgPos << cam.state.testing.cameraGT.pos.transpose();
-		dbgRot << getEulerXYZ(cam.state.testing.cameraGT.rot).transpose();
+		dbgPos << cam.state.testing.cameraGT.translation().transpose();
+		dbgRot << getEulerXYZ(cam.state.testing.cameraGT.rotation()).transpose();
 		wxLogMessage("Cam %s Pos: %s, Rot: %s", m_config.testing.cameraDefinitions[i].label, dbgPos.str(), dbgRot.str());
 		cam.frame = new CameraFrame(m_config.testing.cameraDefinitions[i].label);
 		m_markerDetectors.push_back(cam);
@@ -338,7 +335,9 @@ static bool assureGLInit()
 		}
 
 		// Init pose inference
-		initPoseInference(camWidth, camHeight);
+		initTesting();
+		initCalibration(camWidth, camHeight);
+		initTracking();
 
 		GLInit = true;
 	}
@@ -347,7 +346,9 @@ static bool assureGLInit()
 static void assureGLClean()
 {
 	// Clean pose inference
-	cleanPoseInference();
+	cleanTesting();
+	cleanCalibration();
+	cleanTracking();
 }
 
 // ----------------------------------------------------------------------------
@@ -373,7 +374,15 @@ void CameraFrame::Repaint()
 {
 	wxClientDC dc(m_canvas);
 	Render();
-//	m_canvas->Refresh(false);
+}
+void CameraFrame::AssureInit()
+{
+	wxClientDC dc(m_canvas);
+	wxGetApp().GetContext(m_canvas)->SetCurrent(*m_canvas);
+	if (!assureGLInit()) return;
+	glClearColor(0.0, 0.0, 0.0, 0.0);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	m_canvas->SwapBuffers();
 }
 void CameraFrame::Render()
 {
@@ -394,14 +403,14 @@ void CameraFrame::Render()
 }
 void CameraFrame::OnPaint(wxPaintEvent &event)
 {
-	wxPaintDC dc(m_canvas);
+//	wxPaintDC dc(m_canvas);
 //	Render();
 }
 
-static double TGT[3] { 0, 0, 100 };
-static double RGT[3] { 0, 0, 0 };
-static double TD[3] { 0, 0, 0 };
-static double RD[3] { 0, 0, 0 };
+static Eigen::Vector3f TGT (0, 0, 100);
+static Eigen::Vector3f RGT (0, 0, 0);
+static Eigen::Vector3f TD (0, 0, 0);
+static Eigen::Vector3f RD (0, 0, 0);
 const float dA = 5, dX = 10;
 static bool updateTestThread = true;
 void CameraFrame::OnKeyDown(wxKeyEvent &event)
@@ -411,73 +420,73 @@ void CameraFrame::OnKeyDown(wxKeyEvent &event)
 	{
 	// Target Marker Rotation
 	case 'q': case 'Q':
-		RGT[2] += dA/180.0f*PI;
+		RGT.z() += dA/180.0f*PI;
 		break;
 	case 'e': case 'E':
-		RGT[2] -= dA/180.0f*PI;
+		RGT.z() -= dA/180.0f*PI;
 		break;
 	case 'w': case 'W':
-		RGT[0] -= dA/180.0f*PI;
+		RGT.x() -= dA/180.0f*PI;
 		break;
 	case 's': case 'S':
-		RGT[0] += dA/180.0f*PI;
+		RGT.x() += dA/180.0f*PI;
 		break;
 	case 'a': case 'A':
-		RGT[1] -= dA/180.0f*PI;
+		RGT.y() -= dA/180.0f*PI;
 		break;
 	case 'd': case 'D':
-		RGT[1] += dA/180.0f*PI;
+		RGT.y() += dA/180.0f*PI;
 		break;
 	// Target Marker Position
 	case WXK_UP:
-		TGT[1] += dX;
+		TGT.y() += dX;
 		break;
 	case WXK_DOWN:
-		TGT[1] -= dX;
+		TGT.y() -= dX;
 		break;
 	case WXK_LEFT:
-		TGT[0] -= dX;
+		TGT.x() -= dX;
 		break;
 	case WXK_RIGHT:
-		TGT[0] += dX;
+		TGT.x() += dX;
 		break;
 	case WXK_PAGEUP:
-		TGT[2] += dX;
+		TGT.z() += dX;
 		break;
 	case WXK_PAGEDOWN:
-		TGT[2] -= dX;
+		TGT.z() -= dX;
 		break;
 	// Camera Position
 	case 'i': case 'I':
-		camState->camera.pos.z() -= dX;
+		camState->camera.transform.translation().z() -= dX;
 		break;
 	case 'k': case 'K':
-		camState->camera.pos.z() += dX;
+		camState->camera.transform.translation().z() += dX;
 		break;
 	case 'j': case 'J':
-		camState->camera.pos.x() -= dX;
+		camState->camera.transform.translation().x() -= dX;
 		break;
 	case 'l': case 'L':
-		camState->camera.pos.x() += dX;
+		camState->camera.transform.translation().x() += dX;
 		break;
 	// Camera Rotation
 	case 't': case 'T':
-		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(+dA/180.0f*PI, 0, 0));
+		camState->camera.transform.linear() = getRotationXYZ(getEulerXYZ(camState->camera.transform.rotation()) + Eigen::Vector3f(+dA/180.0f*PI, 0, 0));
 		break;
 	case 'g': case 'G':
-		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(-dA/180.0f*PI, 0, 0));
+		camState->camera.transform.linear() = getRotationXYZ(getEulerXYZ(camState->camera.transform.rotation()) + Eigen::Vector3f(-dA/180.0f*PI, 0, 0));
 		break;
 	case 'h': case 'H':
-		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(0, +dA/180.0f*PI, 0));
+		camState->camera.transform.linear() = getRotationXYZ(getEulerXYZ(camState->camera.transform.rotation()) + Eigen::Vector3f(0, +dA/180.0f*PI, 0));
 		break;
 	case 'f': case 'F':
-		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(0, -dA/180.0f*PI, 0));
+		camState->camera.transform.linear() = getRotationXYZ(getEulerXYZ(camState->camera.transform.rotation()) + Eigen::Vector3f(0, -dA/180.0f*PI, 0));
 		break;
 	case 'r': case 'R':
-		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(0, 0, +dA/180.0f*PI));
+		camState->camera.transform.linear() = getRotationXYZ(getEulerXYZ(camState->camera.transform.rotation()) + Eigen::Vector3f(0, 0, +dA/180.0f*PI));
 		break;
 	case 'z': case 'Z':
-		camState->camera.rot = getRotationXYZ(getEulerXYZ(camState->camera.rot) + Eigen::Vector3f(0, 0, -dA/180.0f*PI));
+		camState->camera.transform.linear() = getRotationXYZ(getEulerXYZ(camState->camera.transform.rotation()) + Eigen::Vector3f(0, 0, -dA/180.0f*PI));
 		break;
 	default:
 		event.Skip();
@@ -498,7 +507,7 @@ static void ThreadSendTestData()
 		MarkerDetector *markerDetector = &wxGetApp().m_markerDetectors[m];
 		CameraState *camState = &markerDetector->state;
 		if (markerDetector->frame != NULL)
-			markerDetector->frame->Repaint();
+			markerDetector->frame->AssureInit();
 	}
 
 	int index = 0;
@@ -516,38 +525,34 @@ static void ThreadSendTestData()
 			// Create random Ground Truth transform
 
 			// Generate completely random poses
-			/*TGT[2] = (rand()%10000 / 10000.0f) * 200 + 20;
-			TGT[0] = (rand()%10000 / 10000.0f) * TGT[2]/2 - TGT[2]/4;
-			TGT[1] = (rand()%10000 / 10000.0f) * TGT[2]/2 - TGT[2]/4;
-			RGT[0] = (rand()%10000 / 10000.0f) * 100 - 50;
-			RGT[1] = (rand()%10000 / 10000.0f) * 100 - 50;
-			RGT[2] = (rand()%10000 / 10000.0f) * 100 - 50;*/
+			/*TGT.z() = (rand()%10000 / 10000.0f) * 200 + 20;
+			TGT.x() = (rand()%10000 / 10000.0f) * TGT.z()/2 - TGT.z()/4;
+			TGT.x() = (rand()%10000 / 10000.0f) * TGT.z()/2 - TGT.z()/4;
+			RGT = Eigen::Vector3f(
+				(rand()%10000 / 10000.0f) * 100 - 50,
+				(rand()%10000 / 10000.0f) * 100 - 50,
+				(rand()%10000 / 10000.0f) * 100 - 50);
+			*/
 
 			// Generate consistently moving pose
-			TD[2] += (rand()%10000 / 10000.0f) * 0.1 - 0.05;
-			TD[0] += (rand()%10000 / 10000.0f) * 0.1 - 0.05;
-			TD[1] += (rand()%10000 / 10000.0f) * 0.1 - 0.05;
-			RD[0] += ((rand()%10000 / 10000.0f) * 2 - 1);
-			RD[1] += ((rand()%10000 / 10000.0f) * 2 - 1);
-			RD[2] += ((rand()%10000 / 10000.0f) * 2 - 1);
+			TD += Eigen::Vector3f(
+				(rand()%10000 / 10000.0f) * 0.1 - 0.05,
+				(rand()%10000 / 10000.0f) * 0.1 - 0.05,
+				(rand()%10000 / 10000.0f) * 0.1 - 0.05);
+			RD += Eigen::Vector3f(
+				(rand()%10000 / 10000.0f) * 2 - 1,
+				(rand()%10000 / 10000.0f) * 2 - 1,
+				(rand()%10000 / 10000.0f) * 2 - 1);
 			// Dampen movement
-			TD[0] *= 0.9;
-			TD[1] *= 0.9;
-			TD[2] *= 0.9;
-			RD[0] *= 0.95;
-			RD[1] *= 0.95;
-			RD[2] *= 0.95;
+			TD *= 0.9f;
+			RD *= 0.95f;
 			// Apply movement
-			TGT[0] += TD[0];
-			TGT[1] += TD[1];
-			TGT[2] += TD[2];
-			RGT[0] += RD[0]/180.0f*PI;
-			RGT[1] += RD[1]/180.0f*PI;
-			RGT[2] += RD[2]/180.0f*PI;
+			TGT += TD;
+			RGT += RD/180.0f*PI;
 
 			// Transform to Eigen
-			Eigen::Vector3f tGT(TGT[0], TGT[1], TGT[2]);
-			Eigen::Matrix3f rGT = getRotationZYX(Eigen::Vector3f(RGT[0], RGT[1], RGT[2]));
+			Eigen::Matrix3f RGT_Mat = getRotationZYX(RGT);
+			Eigen::Isometry3f GT = createModelMatrix(TGT, RGT_Mat);
 
 			// For testing of triangulation only
 			std::vector<int> visibleCount;
@@ -560,21 +565,19 @@ static void ThreadSendTestData()
 
 				// Add origin for orientation
 				camState->poses.clear();
-				camState->poses.push_back({
-					Eigen::Vector3f(0, 0, 0),
-					Eigen::Matrix3f::Identity(),
-				});
+				camState->poses.push_back(Eigen::Isometry3f::Identity());
+
+				// Assume perfect knowledge of camera position (TODO: infer using calibration)
+				camState->camera = getCalibratedCamera();
+				camState->camera.transform = camState->testing.cameraGT;
 
 				// Project marker into camera view (simulated test data)
 				camState->points2D.clear();
-				createMarkerProjection(camState->points2D, camState->testing.markerPtsVisible, camState->testing.cameraGT, tGT, rGT, 1.0f, 0.02f);
+				createMarkerProjection(camState->points2D, camState->testing.markerPtsVisible, camState->camera, GT, 1.0f, 0.02f);
 
 				// For testing only, accumulate by how many cameras a point is seen to determine if it is useful for triangulation
-				for (int i = 0; i < camState->testing.markerPtsVisible.size(); i++)
+				for (int i = 0; i < visibleCount.size(); i++)
 					visibleCount[i] += (int)camState->testing.markerPtsVisible[i];
-
-				// Assume perfect knowledge of camera position (TODO: infer using calibration)
-				camState->camera = camState->testing.cameraGT;
 
 				// Assume perfect order of image points
 				std::random_shuffle(camState->points2D.begin(), camState->points2D.end());
@@ -588,7 +591,7 @@ static void ThreadSendTestData()
 					// Infer pose of generic marker under above assumptions
 					if (camState->points2D.size() >= getExpectedBlobCount())
 					{
-						Pose pose;
+						Eigen::Isometry3f pose;
 						inferMarkerPoseGeneric(camState->points2D, camState->camera, pose);
 						camState->poses.push_back(pose);
 					}
@@ -598,9 +601,10 @@ static void ThreadSendTestData()
 
 					if (camState->poses.size() > 1)
 					{ // Found marker pose using CV, check against GT (ground truth)
-						Eigen::Vector3f tDiff = camState->poses[1].trans-tGT;
-						Eigen::Matrix3f rDiff = rGT * camState->poses[1].rot.transpose();
-						wxLogMessage(L"Cam %d: CV Translation Error: %fcm -- Angle Error: %f\u00B0", m, tDiff.norm(), Eigen::AngleAxisf(rDiff).angle()/PI*180);
+						Eigen::Vector3f tDiff = camState->poses[1].translation()-TGT;
+						Eigen::Matrix3f rDiff = RGT_Mat * camState->poses[1].rotation().transpose();
+						float tError = tDiff.norm(), rError = Eigen::AngleAxisf(rDiff).angle()/PI*180;
+						wxLogMessage(L"Cam %d: CV Translation Error: %fcm -- Angle Error: %f\u00B0", m, tError, rError);
 					}
 				}
 
@@ -615,7 +619,7 @@ static void ThreadSendTestData()
 			std::bitset<MAX_MARKER_POINTS> triangulationMask;
 			for (int i = 0; i < visibleCount.size(); i++)
 				triangulationMask.set(i, visibleCount[i] >= 2);
-			transformMarkerPoints(wxGetApp().testing.triangulatedPoints3D, triangulationMask, tGT, rGT);
+			transformMarkerPoints(wxGetApp().testing.triangulatedPoints3D, triangulationMask, GT);
 
 			// Perform triangulation using 3D Rays
 			std::vector<std::vector<Ray>*> rayGroups;
@@ -632,9 +636,9 @@ static void ThreadSendTestData()
 			bool wrongPose = false;
 			if (wxGetApp().poses3D.size() > 0)
 			{
-				Pose *pose = &wxGetApp().poses3D[0];
-				Eigen::Vector3f tDiff = pose->trans - tGT;
-				Eigen::Matrix3f rDiff = rGT * pose->rot.transpose();
+				Eigen::Isometry3f pose = wxGetApp().poses3D[0];
+				Eigen::Vector3f tDiff = pose.translation() - TGT;
+				Eigen::Matrix3f rDiff = RGT_Mat * pose.rotation().transpose();
 				float tError = tDiff.norm(), rError = Eigen::AngleAxisf(rDiff).angle()/PI*180;
 				wxLogMessage(L"--> Pose Error: Pos %fcm -- Angle %f\u00B0", tError, rError);
 				if (tError > 1 || rError > 2) wrongPose = true;
@@ -648,128 +652,16 @@ static void ThreadSendTestData()
 				else
 					wxLogMessage("Pose wrongly detected! Had %d true triangulated marker points!", (int)wxGetApp().testing.triangulatedPoints3D.size());
 
-				// Analyze with knowledge which triangulated points could be used for the marker detection
-				std::vector<int> relationMask;
-				relationMask.resize(getExpectedBlobCount());
-				std::vector<std::pair<int, float>> mk2trMap;
-				mk2trMap.resize(getExpectedBlobCount());
-				std::vector<PointRelation*> mkRelations;
-				Eigen::Isometry3f gt;
-				gt.linear() = rGT;
-				gt.translation() = tGT;
-				for (int i = 0; i < visibleCount.size(); i++)
-				{
-					int mkPtA = i;
-
-					Eigen::Vector3f trPos = gt * marker3D.markerTemplate.pts[i].pos;
-					float trError = 9999.0f;
-					int trPt = -1;
-					for (int j = 0; j < wxGetApp().points3D.size(); j++)
-					{
-						float error = (wxGetApp().points3D[j].pos.head<3>() - trPos).norm();
-						if (error < trError)
-						{
-							trError = error;
-							trPt = j;
-						}
-					}
-
-					if (triangulationMask.test(mkPtA))
-					{
-						mk2trMap[i].first = trPt;
-						mk2trMap[i].second = trError;
-						wxLogMessage("Found matching Marker point %d => %d within %f cm!", i, trPt, trError);
-
-						for (int j = 0; j < marker3D.pointRelation[mkPtA].size(); j++)
-						{
-							int relInd = marker3D.pointRelation[mkPtA][j];
-							PointRelation *rel = &marker3D.relationDist[relInd];
-							int mkPtB = rel->pt1 == mkPtA? rel->pt2 : rel->pt1;
-							if (mkPtB > mkPtA && triangulationMask.test(mkPtB))
-							{ // rel could have been inferred in marker, as both points ARE in the triangulated Point Cloud
-								float minError = 3 * (0.01f + 0.01f);
-								auto mkRelRange = std::equal_range(marker3D.relationDist.begin(), marker3D.relationDist.end(), rel->distance, ErrorRangeComp(minError));
-								wxLogMessage("--> Relation (%d - %d) is in triangulated point cloud with minimum of %d candidates!", mkPtA, mkPtB, (int)std::distance(mkRelRange.first, mkRelRange.second));
-								mkRelations.push_back(rel);
-								if (relationMask[mkPtA] != 0 || relationMask[mkPtB] != 0)
-								{ // Found a triple of triangulated points, so a candidate SHOULD have been found
-									//wxLogMessage("!!!!!! ----> Triple Detected!");
-								}
-								relationMask[mkPtA]++;
-								relationMask[mkPtB]++;
-							}
-						}
-					}
-					else if (trError < 0.1f)
-					{ // Even though it should NOT be triangulated, there is a fake point in it
-						mk2trMap[i].first = trPt;
-						mk2trMap[i].second = trError;
-						wxLogMessage("!!!!!! Marker point %d has a fake triangulated point %d within %f cm!", i, trPt, trError);
-					}
-				}
-
-				for (int i = 0; i < mkRelations.size(); i++)
-				{
-					if (relationMask[mkRelations[i]->pt1] > 1)
-					{
-						int mkPtJ = mkRelations[i]->pt1;
-						int mkPtB = mkRelations[i]->pt2;
-						for (int j = 0; j < mkRelations.size(); j++)
-						{
-							if (mkRelations[j]->pt1 == mkPtJ || mkRelations[j]->pt2 == mkPtJ)
-							{
-								int mkPtA = mkRelations[j]->pt1 == mkPtJ? mkRelations[j]->pt2 : mkRelations[j]->pt1;
-								if (mkPtA == mkPtB) continue;
-								bool sharedArm = false;
-								for (int l = 0; l < marker3D.pointRelation[mkPtA].size(); l++)
-									if (sharedArm = (marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt1 == mkPtB || marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt2 == mkPtB))
-										break;
-
-								wxLogMessage("Found triple (%d - %d / %f - %f), (%d - %d / %f - %f), (%d - %d / %f - %f)! B-A have shared arm: %s!",
-									mkPtB, mk2trMap[mkPtB].first, mk2trMap[mkPtB].second, 3*wxGetApp().points3D[mk2trMap[mkPtB].first].error,
-									mkPtJ, mk2trMap[mkPtJ].first, mk2trMap[mkPtJ].second, 3*wxGetApp().points3D[mk2trMap[mkPtJ].first].error,
-									mkPtA, mk2trMap[mkPtA].first, mk2trMap[mkPtA].second, 3*wxGetApp().points3D[mk2trMap[mkPtA].first].error,
-									sharedArm? "True" : "False");
-
-							}
-						}
-					}
-					else if (relationMask[mkRelations[i]->pt2] > 1)
-					{
-						int mkPtJ = mkRelations[i]->pt2;
-						int mkPtB = mkRelations[i]->pt1;
-						for (int j = 0; j < mkRelations.size(); j++)
-						{
-							if (mkRelations[j]->pt1 == mkPtJ || mkRelations[j]->pt2 == mkPtJ)
-							{
-								int mkPtA = mkRelations[j]->pt1 == mkPtJ? mkRelations[j]->pt2 : mkRelations[j]->pt1;
-								if (mkPtA == mkPtB) continue;
-								bool sharedArm = false;
-								for (int l = 0; l < marker3D.pointRelation[mkPtA].size(); l++)
-									if (sharedArm = (marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt1 == mkPtB || marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt2 == mkPtB))
-										break;
-
-								wxLogMessage("Found triple (%d - %d / %f - %f), (%d - %d / %f - %f), (%d - %d / %f - %f)! B-A have shared arm: %s!",
-									mkPtB, mk2trMap[mkPtB].first, mk2trMap[mkPtB].second, 3*wxGetApp().points3D[mk2trMap[mkPtB].first].error,
-									mkPtJ, mk2trMap[mkPtJ].first, mk2trMap[mkPtJ].second, 3*wxGetApp().points3D[mk2trMap[mkPtJ].first].error,
-									mkPtA, mk2trMap[mkPtA].first, mk2trMap[mkPtA].second, 3*wxGetApp().points3D[mk2trMap[mkPtA].first].error,
-									sharedArm? "True" : "False");
-
-							}
-						}
-					}
-
-				}
+				// Debug using ground truth to visualize why tracking algorithm failed
+				analyzeTrackingAlgorithm(visibleCount, triangulationMask, wxGetApp().points3D, GT);
 
 				// Interrupt
 				static int times = 0;
 				if (times++ < 5) wxMessageOutput::Get()->Printf (wxT("Failed to detect pose!"));
 			}
 
-			wxGetApp().poses3D.push_back({
-				Eigen::Vector3f(0, 0, 0),
-				Eigen::Matrix3f::Identity(),
-			});
+			// Add origin for orientation
+			wxGetApp().poses3D.push_back(Eigen::Isometry3f::Identity());
 
 			// Start visualization
 			for (int m = 0; m < wxGetApp().m_markerDetectors.size(); m++)
