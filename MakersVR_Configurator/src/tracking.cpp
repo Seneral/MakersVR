@@ -4,361 +4,139 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#define LINE_MERGE_ANGLE 10
-#define LINE_MAX_CONNECTION_DIST 30 // In percent of full width
-#define MAX_BASE_DIFF 0.2 // Max offset a base center can have relative to base line length
-#define MAX_SIZE_DIFF 4 // Max size factor
 #define MAX_CAMERA_COUNT 3
 #define NUM_CLOSEST_RELATIONS 4
 #define MIN_DISTANCE_RELATIONS 2 // cm
 #define SIGMA_ERROR 3 // Sigma value used to account for estimated error of triangulated points
 
-
-#define USE_CV
-
-#include "poseinference.hpp"
-
-#include "mesh.hpp"
-#include "main.h"
-
-#include "util.h"
-
-#include <iostream>
-#include <algorithm>
-#include <cmath>
-#include <random>
-#include <set>
+#include "tracking.hpp"
+#include "wxbase.hpp" // wxLog*
 
 #include "Eigen/SVD"
 
-#ifdef USE_CV
-// Don't include full library, only needed modules
-#include "opencv2/core.hpp"
-#include "opencv2/calib3d.hpp"
-#endif
+
+/**
+ * Tracking
+ */
+
+
+/* Structures */
+
+struct Intersection
+{
+	Eigen::Vector3f center;
+	float error;
+	Intersection *merge;
+	Ray* rays[MAX_CAMERA_COUNT];
+};
+
+struct MarkerCandidate3D
+{
+	float validity;
+	std::vector<int> points;
+	std::vector<int> pointMap;
+	// To get triangulated points: points[points[i]]
+	// To get actual points: marker[pointMap[points3D[i]]]
+	Eigen::Isometry3f estTransform;
+};
+
+
+/* Variables */
+
+MarkerLookup marker3D;
+
 
 /* Operators */
+
 bool operator<(const struct PointRelation& a, const struct PointRelation& b) { return a.distance < b.distance; }
 bool ErrorRangeComp::operator() (const PointRelation& rel, float value) { return rel.distance < value-error; }
 bool ErrorRangeComp::operator() (float value, const PointRelation& rel) { return value+error < rel.distance; }
 
 
-/* Variables  */
+/* Functions */
 
-// Marker pose inference
-int width, height;
-double fovV, fovH;
-MarkerLookup marker3D;
-
-#ifdef USE_CV
-std::vector<cv::Point3f> cv_marker3DTemplate;
-cv::Matx33f cv_camMat;
-cv::Matx14f cv_distort;
-// Current values used for intrinsic guess
-cv::Matx31d cv_rotation;
-cv::Matx31d cv_translation;
-#endif
-
-// Visualization
-Mesh *vizCoordCross;
-GLuint vizLinesVBO; // Line buffer for uploading visualization lines to GPU
-
-// Helper functions for projection and visualization
-Eigen::Matrix4f createProjectionMatrix();
-Eigen::Matrix4f createModelMatrix(const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float scale);
-Eigen::Matrix4f createViewMatrix(const Transform &camera);
-Eigen::Matrix4f createMVP(const Transform &camera, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float scale);
-
-
-/*
- * Initialize resources for pose inference
+/**
+ * Initialize resources for tracking
  */
-void initPoseInference(int Width, int Height)
+void initTracking()
 {
-	width = Width;
-	height = Height;
-
-	// Init visualization coordinate cross
-	vizCoordCross = new Mesh ({ POS, COL }, {
-		 0, 0, 0, 1, 0, 0,
-		 1, 0, 0, 1, 0, 0,
-		 0, 0, 0, 0, 1, 0,
-		 0, 1, 0, 0, 1, 0,
-		 0, 0, 0, 0, 0, 1,
-		 0, 0, 1, 0, 0, 1,
-	}, {});
-	vizCoordCross->setMode(GL_LINES);
-	// Setup VertexBufferObject for line data
-	glGenBuffers(1, &vizLinesVBO);
-
-#ifdef USE_CV
-	// Init dummy camera matrix
-	float focalLen = (float)width; // Approximation
-	cv_camMat = cv::Matx33f(
-		focalLen, 0, (float)width/2,
-		0, focalLen, (float)height/2,
-		0, 0, 1);
-	cv_distort = cv::Matx14f(0, 0, 0, 0);
-	// Get camera parameters
-	double focalLength, aspectRatio;
-	cv::Point2d principalPoint;
-	cv::calibrationMatrixValues(cv_camMat, cv::Size2i(width, height), 3.68f, 2.76f, fovH, fovV, focalLength, principalPoint, aspectRatio);
-#endif
-
-	// TODO
-	// Init resources and save camera parameters (size, fov, distortion coefficients, etc.)
-}
-
-/*
- * Finds all (potential) marker and also returns all free (unassociated) blobs left (Deprecated)
- */
-void findMarkerCandidates(std::vector<Point> &points2D, std::vector<Marker> &markers2D, std::vector<Point*> &freePoints2D)
-{
-	typedef struct MarkerCandidate
-	{
-		uint8_t c;
-		uint8_t a;
-		uint8_t b;
-		uint8_t h;
-		float error;
-	} MarkerCandidate;
-
-	static std::vector<MarkerCandidate> markerCandidates;
-	static std::bitset<128> markerTag;
-
-	// Find and extract all markers candidates (base line of 3 dots plus header)
-	// Step 1: Find all base lines (3 points in a straight line with equal distance)
-	// Step 2: For each line, find the leading point on one side
-	markerCandidates.clear();
-	for (uint8_t c = 0; c < points2D.size(); c++)
-	{
-		Point *ptC = &points2D[c];
-
-		for (uint8_t a = 0; a < points2D.size(); a++)
-		{
-			if (a == c) continue;
-			Point *ptA = &points2D[a];
-
-			// Check size difference
-			float sizeMin = std::min(ptC->S, ptA->S);
-			float sizeMax = std::max(ptC->S, ptA->S);
-			if (sizeMin * MAX_SIZE_DIFF < sizeMax) continue;
-
-			for (uint8_t b = a+1; b < points2D.size(); b++)
-			{
-				if (b == c) continue;
-
-				// Check size difference
-				Point *ptB = &points2D[b];
-				sizeMin = std::min(sizeMin, ptB->S);
-				sizeMax = std::max(sizeMax, ptB->S);
-				if (sizeMin * MAX_SIZE_DIFF < sizeMax) continue;
-
-				// Get base parameters
-				float baseX = ptA->X - ptB->X;
-				float baseY = ptA->Y - ptB->Y;
-				float baseLen = std::sqrt(baseX*baseX + baseY*baseY);
-
-				// Check if c is at the center of a and b, building a base line
-				float diffX = ptC->X * 2 - ptA->X - ptB->X;
-				float diffY = ptC->Y * 2 - ptA->Y - ptB->Y;
-				float centerDiff = std::sqrt((float)diffX*diffX + diffY*diffY) / 2;
-				float centerError = centerDiff / baseLen;
-
-				// if (std::abs(diffX) + std::abs(diffY) <= MAX_BASE_PX_DIST)
-				if (centerError <= MAX_BASE_DIFF)
-				{ // Found a base
-					float baseAngle = std::atan(baseY / baseX) / PI * 180;
-
-					// Find closest blob as heading
-					int h = -1;
-					float headLen = (float)width;
-					for (int i = 0; i < points2D.size(); i++)
-					{
-						if (i == c || i == a || i == b) continue;
-						Point *ptHC = &points2D[i];
-
-						// Check size difference
-						if (std::min(sizeMin, ptHC->S) * MAX_SIZE_DIFF < std::max(sizeMax, ptHC->S)) continue;
-
-						// Get Head parameters
-						float hX = ptC->X - ptHC->X;
-						float hY = ptC->Y - ptHC->Y;
-						float hLen = std::sqrt(hX*hX + hY*hY);
-						if (hLen < baseLen*10.0 && hLen < headLen)
-						{ // Best head candidate so far
-							headLen = hLen;
-							h = i;
-						}
-					}
-					if (h != -1)
-					{
-						Point *ptH = &points2D[h];
-
-						// Get Head parameters
-						float headX = ptC->X - ptH->X;
-						float headY = ptC->Y - ptH->Y;
-						float headLen = std::sqrt(headX*headX + headY*headY);
-
-						// Get inner angle between base and head
-						float innerDot = baseX*headX + baseY*headY;
-						float innerAngle = std::acos(innerDot / (baseLen * headLen)) / PI * 180 - 90;
-
-						// Register marker
-						markerCandidates.push_back({
-							c, a, b, (uint8_t)h, centerError
-						});
-#ifdef MARKER_DEBUG
-						std::cout << "Registered marker with base angle " << baseAngle << ", length " << baseLen << " and error " << centerError << " head rel angle " << innerAngle << " and length " << headLen << "!" << std::endl;
-#endif
-						goto foundMarker;
-					}
-				}
-			}
-
-			foundMarker: continue;
-		}
-	}
-
-	// Sort marker candidates by accuracy
-	std::sort(markerCandidates.begin(), markerCandidates.end(), [](MarkerCandidate m1, MarkerCandidate m2) {
-		return m1.error < m2.error;
-	});
-
-	// Find best marker candidates and associate them
-	markers2D.clear();
-	markerTag.reset();
-	for (int m = 0; m < markerCandidates.size(); m++)
-	{
-		MarkerCandidate *mc = &markerCandidates[m];
-		if (markerTag[mc->c] || markerTag[mc->a] || markerTag[mc->b]) continue;
-
-		// Set blobs as used
-		markerTag.set(mc->a);
-		markerTag.set(mc->b);
-		markerTag.set(mc->c);
-		markerTag.set(mc->h);
-
-		markers2D.push_back({
-			&points2D[mc->c],
-			&points2D[mc->a],
-			&points2D[mc->b],
-			&points2D[mc->h],
-		});
-
-#ifdef MARKER_DEBUG
-		std::cout << "Chose marker with error " << mc->error << "!" << std::endl;
-#endif
-	}
-
-	// Find blobs not part of any marker
-	freePoints2D.clear();
-	if (points2D.size() > markers2D.size()*4)
-	{ // There are blobs not part of any marker
-		for (int b = 0; b < points2D.size(); b++)
-		{
-			if (!markerTag.test(b))
-			{ // Blob is not part of any marker
-				freePoints2D.push_back(&points2D[b]);
-			}
-		}
-	}
 }
 
 /**
- * Interprets OpenCV position and rotation in camera spaces and transforms it into correct scene transformations
+ * Cleanup of resources
  */
-void interpretCVSpace(const Transform &camera, const cv::Matx31d &cvPos, const cv::Matx31d &cvRot, Eigen::Vector3f *position, Eigen::Matrix3f *rotation)
+void cleanTracking()
 {
-	// Z-Axis of OpenGL/Blender coordinate frame is opposite of OpenCV
-	// OpenGL/Blender is -z foward, +z towards viewer
-	Eigen::Vector3f pos(cvPos(0), cvPos(1), -cvPos(2));
-
-	// Convert rodrigues rotation parameters into rotation matrix
-	cv::Matx33d cvRotMat;
-	cv::Rodrigues(cvRot, cvRotMat);
-	// Copy rotation matrix into Eigen rotation matrix (with transpose to account for row/column storage)
-	Eigen::Matrix3d rotD;
-	cv::Mat rotMat_Shadow(3, 3, CV_64F, rotD.data(), (size_t)(rotD.stride()*sizeof(double)));
-	cv::transpose(cvRotMat, rotMat_Shadow);
-	// Convert to euler angles temporarily
-	Eigen::Vector3f rotAngles = getEulerXYZ(rotD.cast<float>());
-	// OpenCV rotation needs to be inverted, in addition to accounting for the z-axis flip
-	rotAngles = Eigen::Vector3f(-rotAngles.x(), -rotAngles.y(), +rotAngles.z());
-	// Convert back to matrix
-	Eigen::Matrix3f rot = getRotationXYZ(rotAngles);
-
-	// Finally, remove camera transform
-	*position = camera.rot*pos + camera.pos;
-	*rotation = camera.rot*rot;
 }
 
-/*
- * Infer the pose of a set of (likely) markers and the known camera position to transform into world space
+/**
+ * Sets up lookup tables for quick marker identification
  */
-void inferMarkerPoses(std::vector<Marker> &markers2D, const Transform &camera, std::vector<Pose> &poses3D)
+void generateLookupTables(MarkerLookup *marker3D)
 {
-	poses3D.clear();
-	poses3D.reserve(markers2D.size());
-
-#ifdef USE_CV
-	// Try to infer pose for each marker
-	for (int m = 0; m < markers2D.size(); m++)
+	if (MAX_MARKER_POINTS < marker3D->markerTemplate.pts.size())
 	{
-		Marker *marker = &markers2D[m];
-
-		// Create CV 2D array of marker points
-		std::vector<cv::Point2f> marker2D {
-			cv::Point2f(marker->center->X, marker->center->Y),
-			cv::Point2f(marker->endA->X, marker->endA->Y),
-			cv::Point2f(marker->endB->X, marker->endB->Y),
-			cv::Point2f(marker->header->X, marker->header->Y)
-		};
-
-		// use solvePnP to recreate rotation and translation
-		cv::solvePnP(cv_marker3DTemplate, marker2D, cv_camMat, cv_distort, cv_rotation, cv_translation, false, cv::SOLVEPNP_ITERATIVE);
-
-		// Convert from OpenCV to Blender/OpenGL space and account for camera transform
-		Eigen::Vector3f pos;
-		Eigen::Matrix3f rot;
-		interpretCVSpace(camera, cv_translation, cv_rotation, &pos, &rot);
-		poses3D.push_back({ pos, rot });
+		wxLogError("Marker has more marker points (%d) than maximum code has been compiled with (%d)", (int)marker3D->markerTemplate.pts.size(), MAX_MARKER_POINTS);
 	}
 
-#endif
+	// Setup lookup tables for quick marker identification
+	marker3D->relationDist.clear();
+	marker3D->pointRelation.clear();
+	marker3D->pointRelation.resize(marker3D->markerTemplate.pts.size());
+
+	// Step 0: Determine upper bound for total number of relations (binominal coefficient)
+	// This estimate (n^k / k!) is excellent for small k (here k=2)
+	int relUpperBound = marker3D->markerTemplate.pts.size() * marker3D->markerTemplate.pts.size() / 2;
+
+	// Step 1: Create all relations
+	std::vector<PointRelation> relations;
+	relations.reserve(relUpperBound);
+	for (int i = 0; i < marker3D->markerTemplate.pts.size()-1; i++)
+	{
+		DefMarkerPoint *pt1 = &marker3D->markerTemplate.pts[i];
+		for (int j = i+1; j < marker3D->markerTemplate.pts.size(); j++)
+		{
+			DefMarkerPoint *pt2 = &marker3D->markerTemplate.pts[j];
+			Eigen::Vector3f dir = pt2->pos - pt1->pos;
+			float distance = dir.norm();
+			relations.push_back({ i, j, dir / distance, distance });
+		}
+	}
+
+	// Step 2: Sort based on distance
+	std::sort(relations.begin(), relations.end());
+
+	// Step 3: Enter relevant relations
+	int *pointRelationCount = new int[marker3D->markerTemplate.pts.size()];
+	memset(pointRelationCount, 0, marker3D->markerTemplate.pts.size()*sizeof(int));
+	for (int i = 0; i < relations.size(); i++)
+	{
+		PointRelation *rel = &relations[i];
+		if (pointRelationCount[rel->pt1] < NUM_CLOSEST_RELATIONS || pointRelationCount[rel->pt2] < NUM_CLOSEST_RELATIONS || rel->distance < MIN_DISTANCE_RELATIONS)
+		{ // Each point should have at least NUM_CLOSEST_RELATIONS stored relations
+			pointRelationCount[rel->pt1]++;
+			pointRelationCount[rel->pt2]++;
+			int relIndex = marker3D->relationDist.size();
+			marker3D->relationDist.push_back(*rel);
+			marker3D->pointRelation[rel->pt1].push_back(relIndex);
+			marker3D->pointRelation[rel->pt2].push_back(relIndex);
+		}
+	}
+
+	// markerDistLookup is now a list of relations sorted by distance with at least NUM_CLOSEST_RELATIONS of the closest relations per point
 }
 
-/*
+/**
  * Infer the pose of a marker given it's image points and the known camera position to transform into world space
  */
-void inferMarkerPoseGeneric(std::vector<Point> &points2D, const Transform &camera, Pose &pose3D)
+void castRays(const std::vector<Point> &points2D, const Camera &camera, std::vector<Ray> &rays3D)
 {
-#ifdef USE_CV
-	// Create CV 2D array of marker points
-	std::vector<cv::Point2f> cv_points2D;
-	for (int i = 0; i < points2D.size(); i++)
-		cv_points2D.push_back(cv::Point2f(points2D[i].X, points2D[i].Y));
-
-	// use solvePnP to recreate rotation and translation
-	cv::solvePnP(cv_marker3DTemplate, cv_points2D, cv_camMat, cv_distort, cv_rotation, cv_translation, false, cv::SOLVEPNP_ITERATIVE);
-
-	// Convert from OpenCV to Blender/OpenGL space and account for camera transform
-	interpretCVSpace(camera, cv_translation, cv_rotation, &pose3D.trans, &pose3D.rot);
-#endif
-}
-
-/*
- * Infer the pose of a marker given it's image points and the known camera position to transform into world space
- */
-void castRays(const std::vector<Point> &points2D, const Transform &camera, std::vector<Ray> &rays3D)
-{
-	Eigen::Matrix4f vpInv = (createProjectionMatrix() * createViewMatrix(camera)).inverse();
+	Eigen::Projective3f vpInv = camera.transform * createProjectionMatrix(camera.fovH, camera.fovV).inverse();
 	for (int i = 0; i < points2D.size(); i++)
 	{
-		Eigen::Vector4f start(camera.pos.x(), camera.pos.y(), camera.pos.z(), 1.0f);
-		Eigen::Vector4f end(points2D[i].X/width*2-1, points2D[i].Y/height*2-1, 1.0f, 1.0f);
-		end = vpInv * end; // Clip space to world space
-		end = end / end.w();
+		Eigen::Vector3f start = camera.transform.translation();
+		Eigen::Vector3f end(points2D[i].X/camera.width*2-1, points2D[i].Y/camera.height*2-1, 1.0f);
+		end = projectPoint(vpInv, end); // Clip space to world space
 		rays3D.push_back({ start, (end - start).normalized(), 0 });
 	}
 }
@@ -382,19 +160,12 @@ void rayIntersect(const Ray *ray1, const Ray *ray2, float *sec1, float *sec2)
 	*sec2 = (a*e - b*d) / s;
 }
 
-/*
+/**
  * Calculate the intersection points between rays of separate groups
+ * Returns how many of the points are not conflicted (those are at the beginning of the array)
  */
 int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::vector<TriangulatedPoint> &points3D, std::vector<std::vector<int>> &conflicts, float errorLimit)
 {
-	struct Intersection
-	{
-		Eigen::Vector4f center;
-		float error;
-		Intersection *merge;
-		Ray* rays[MAX_CAMERA_COUNT];
-	};
-
 	int groupCnt = rayGroups.size();
 	if (groupCnt > MAX_CAMERA_COUNT)
 	{
@@ -423,8 +194,8 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 					// Calculate ray intersection
 					float sec1, sec2;
 					rayIntersect(ray1, ray2, &sec1, &sec2);
-					Eigen::Vector4f pos1 = ray1->pos + ray1->dir * sec1;
-					Eigen::Vector4f pos2 = ray2->pos + ray2->dir * sec2;
+					Eigen::Vector3f pos1 = ray1->pos + ray1->dir * sec1;
+					Eigen::Vector3f pos2 = ray2->pos + ray2->dir * sec2;
 					// Calculate distance
 					float errorSq = (pos1-pos2).squaredNorm()/4;
 					if (errorSq > errorLimit*errorLimit) continue;
@@ -559,7 +330,7 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 			// Merge
 			mergedIntersections.push_back({});
 			Intersection *ixm = &mergedIntersections[mergedIntersections.size()-1];
-			ixm->center = Eigen::Vector4f::Zero();
+			ixm->center = Eigen::Vector3f::Zero();
 			ixm->error = 0.0f;
 			for (int i = 0; i < mergers.size(); i++)
 			{
@@ -679,15 +450,6 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 	return pointCount;
 }
 
-typedef struct {
-	float validity;
-	std::vector<int> points;
-	std::vector<int> pointMap;
-	// To get triangulated points: points[points[i]]
-	// To get actual points: marker[pointMap[points3D[i]]]
-	Eigen::Isometry3f estTransform;
-} MarkerCandidate3D;
-
 static void kabsch(MarkerCandidate3D *candidate, const std::vector<TriangulatedPoint> &points3D)
 {
 	int ptCount = candidate->points.size();
@@ -728,7 +490,7 @@ static void kabsch(MarkerCandidate3D *candidate, const std::vector<TriangulatedP
 /*
  * Detect Markers in the triangulated 3D Point cloud
  */
-void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Pose> &poses3D)
+void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D)
 {
 //	wxLogMessage("--------------");
 
@@ -743,7 +505,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 		for (int j = i+1; j < points3D.size(); j++)
 		{
 			const TriangulatedPoint *pt2 = &points3D[j];
-			Eigen::Vector4f dir = pt2->pos - pt1->pos;
+			Eigen::Vector3f dir = pt2->pos - pt1->pos;
 			//if (dir.sum() > maxRelevantDistance) continue;
 			float distSq = dir.squaredNorm();
 			if (distSq < maxRelevantDistanceSq)
@@ -1022,7 +784,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 	if (lowestMSEInd >= 0)
 	{ // Got a candidate
 		MarkerCandidate3D *candidate = &candidates[lowestMSEInd];
-		poses3D.push_back({ candidate->estTransform.translation(), candidate->estTransform.rotation() });
+		poses3D.push_back(candidate->estTransform);
 		wxLogMessage("Best candidate %d of %d total with %d points has internal MSE of %f", lowestMSEInd, (int)candidates.size(), (int)candidate->points.size(), lowestMSE);
 	}
 	else
@@ -1041,339 +803,4 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 	}
 
 //	wxLogMessage("---------");
-}
-
-/*
- * Visualize single-camera poses
- */
-void visualizePoses(const Transform &camera, const std::vector<Point> &points2D, const std::vector<Marker> &markers2D, const std::vector<Pose> &poses3D)
-{
-	struct Line { float startX; float startY; float endX; float endY; };
-
-	// Render all blobs
-	glColor3f(1,0,0);
-	for (int i = 0; i < points2D.size(); i++)
-	{
-		//GLfloat s = points2D[i].S*2.0f;
-		//glPointSize(s <= 1? 1.0f : s);
-		glPointSize(6.0f);
-		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
-		glVertex3f(points2D[i].X/width*2-1, points2D[i].Y/height*2-1, 0.9f);
-		glEnd();
-	}
-
-	// Render inferred poses
-	glColor3f(0, 0, 1);
-	glLineWidth(2.0f);
-	for (int i = 0; i < poses3D.size(); i++)
-	{
-		const Pose *pose = &poses3D[i];
-		glLoadMatrixf((float*)createMVP(camera, pose->trans, pose->rot, 10.0f).data());
-		vizCoordCross->draw();
-	}
-	glLoadIdentity();
-
-	// Render marker lines
-	std::vector<struct Line> markerLines;
-	for (int m = 0; m < markers2D.size(); m++)
-	{
-		const Marker *marker = &markers2D[m];
-		// Display base
-		markerLines.push_back({
-			(marker->endA->X / width - 0.5f) * 2.0f,
-			(marker->endA->Y / height - 0.5f) * 2.0f,
-			(marker->endB->X / width - 0.5f) * 2.0f,
-			(marker->endB->Y / height - 0.5f) * 2.0f
-		});
-		// Display heading
-		markerLines.push_back({
-			(marker->center->X / width - 0.5f) * 2.0f,
-			(marker->center->Y / height - 0.5f) * 2.0f,
-			(marker->header->X / width - 0.5f) * 2.0f,
-			(marker->header->Y / height - 0.5f) * 2.0f
-		});
-	}
-	glLineWidth(2.0f);
-	glColor3f(1, 1, 0);
-	glBindBuffer(GL_ARRAY_BUFFER, vizLinesVBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(struct Line) * markerLines.size(), &markerLines[0], GL_STREAM_DRAW);
-	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(struct Line)/2, (void *)0);
-	glEnableVertexAttribArray(0);
-	glDrawArrays(GL_LINES, 0, (int)markerLines.size()*2);
-}
-
-/*
- * Visualize multi-camera triangulated markers
- */
-void visualizeMarkers(const Transform &camera, const std::vector<Point> &points2D, const std::vector<Ray> &rays3D, const std::vector<TriangulatedPoint> &points3D, int nonconflictedCount, const std::vector<Eigen::Vector4f> &triangulatedPoints3D, const std::vector<Pose> &poses3D)
-{
-	struct Line { float startX; float startY; float endX; float endY; };
-	Eigen::Matrix4f vp = createProjectionMatrix() * createViewMatrix(camera);
-
-	// Render ray lines
-	std::vector<struct Line> rayLines;
-	for (int r = 0; r < rays3D.size(); r++)
-	{
-		const Ray *ray = &rays3D[r];
-		const int segCnt = 5;
-		for (int i = 0; i < segCnt; i ++)
-		{ // Display ray in segments to prevent weird clipping
-			Eigen::Vector4f start = vp * (ray->pos + ray->dir * i * 1000/segCnt);
-			Eigen::Vector4f end = vp * (ray->pos + ray->dir * (i+1) * 1000/segCnt);
-			// Register ray segment
-			rayLines.push_back({
-				start.x()/start.w(),
-				start.y()/start.w(),
-				end.x()/end.w(),
-				end.y()/end.w()
-			});
-		}
-	}
-	glLineWidth(0.5f);
-	glColor3f(0, 1, 0);
-	glBindBuffer(GL_ARRAY_BUFFER, vizLinesVBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(struct Line) * rayLines.size(), &rayLines[0], GL_STREAM_DRAW);
-	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(struct Line)/2, (void *)0);
-	glEnableVertexAttribArray(0);
-	glDrawArrays(GL_LINES, 0, (int)rayLines.size()*2);
-
-	// Render all blobs
-/*	glColor3f(1,0,0);
-	for (int i = 0; i < points2D.size(); i++)
-	{
-		//GLfloat s = points2D[i].S*2.0f;
-		//glPointSize(s <= 1? 1.0f : s);
-		glPointSize(6.0f);
-		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
-		glVertex3f(points2D[i].X/width*2-1, points2D[i].Y/height*2-1, 0.9f);
-		glEnd();
-	}*/
-
-	// Testing: Render points which could have been triangulated
-	glColor3f(1,0,0);
-	for (int i = 0; i < triangulatedPoints3D.size(); i++)
-	{
-		Eigen::Vector4f pt = vp * triangulatedPoints3D[i];
-		glPointSize(6.0f);
-		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
-		glVertex3f(pt.x()/pt.w(), pt.y()/pt.w(), pt.z()/pt.w());
-		glEnd();
-	}
-
-	// Render all triangulated points
-	glColor3f(0,1,1);
-	for (int i = 0; i < nonconflictedCount; i++)
-	{
-		Eigen::Vector4f pt = vp * points3D[i].pos;
-//		glPointSize(4.0f);
-		glPointSize(3.0f * points3D[i].confidence + 1.0f);
-		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
-		glVertex3f(pt.x()/pt.w(), pt.y()/pt.w(), pt.z()/pt.w());
-		glEnd();
-//		wxLogMessage("Point %d confidence: %f", i, points[i].confidence);
-	}
-	glColor3f(1,1,0);
-	for (int i = nonconflictedCount; i < points3D.size(); i++)
-	{
-		Eigen::Vector4f pt = vp * points3D[i].pos;
-//		glPointSize(4.0f);
-		glPointSize(3.0f * points3D[i].confidence + 1.0f);
-		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
-		glVertex3f(pt.x()/pt.w(), pt.y()/pt.w(), pt.z()/pt.w());
-		glEnd();
-//		wxLogMessage("Conflicted Point %d confidence: %f", i, conflictedPoints[i].confidence);
-	}
-
-	// Render inferred poses
-	glColor3f(0, 0, 1);
-	glLineWidth(2.0f);
-	for (int i = 0; i < poses3D.size(); i++)
-	{
-		const Pose *pose = &poses3D[i];
-		glLoadMatrixf((float*)createMVP(camera, pose->trans, pose->rot, 10.0f).data());
-		vizCoordCross->draw();
-	}
-	glLoadIdentity();
-}
-
-/**
- * Cleanup of resources
- */
-void cleanPoseInference()
-{
-	// TODO
-}
-
-/*
- * Sets the specified marker data as the current target
- */
-void setActiveMarkerData(DefMarker markerData)
-{
-	marker3D.markerTemplate = markerData;
-#ifdef USE_CV
-	cv_marker3DTemplate.clear();
-	for (int i = 0; i < marker3D.markerTemplate.pts.size(); i++)
-	{
-		DefMarkerPoint *pt = &marker3D.markerTemplate.pts[i];
-		cv_marker3DTemplate.push_back(cv::Point3f(pt->pos.x(), pt->pos.y(), pt->pos.z()));
-	}
-#endif
-
-	// Setup lookup tables for quick marker identification
-	marker3D.relationDist.clear();
-	marker3D.pointRelation.clear();
-	marker3D.pointRelation.resize(marker3D.markerTemplate.pts.size());
-
-	// Step 0: Determine upper bound for total number of relations (binominal coefficient)
-	// This estimate (n^k / k!) is excellent for small k (here k=2)
-	int relUpperBound = marker3D.markerTemplate.pts.size() * marker3D.markerTemplate.pts.size() / 2;
-
-	// Step 1: Create all relations
-	std::vector<PointRelation> relations;
-	relations.reserve(relUpperBound);
-	for (int i = 0; i < marker3D.markerTemplate.pts.size()-1; i++)
-	{
-		DefMarkerPoint *pt1 = &marker3D.markerTemplate.pts[i];
-		for (int j = i+1; j < marker3D.markerTemplate.pts.size(); j++)
-		{
-			DefMarkerPoint *pt2 = &marker3D.markerTemplate.pts[j];
-			Eigen::Vector3f dir = pt2->pos - pt1->pos;
-			float distance = dir.norm();
-			relations.push_back({ i, j, Eigen::Vector4f(dir.x(), dir.y(), dir.z(), 0) / distance, distance });
-		}
-	}
-
-	// Step 2: Sort based on distance
-	std::sort(relations.begin(), relations.end());
-
-	// Step 3: Enter relevant relations
-	int *pointRelationCount = new int[marker3D.markerTemplate.pts.size()];
-	memset(pointRelationCount, 0, marker3D.markerTemplate.pts.size()*sizeof(int));
-	for (int i = 0; i < relations.size(); i++)
-	{
-		PointRelation *rel = &relations[i];
-		if (pointRelationCount[rel->pt1] < NUM_CLOSEST_RELATIONS || pointRelationCount[rel->pt2] < NUM_CLOSEST_RELATIONS || rel->distance < MIN_DISTANCE_RELATIONS)
-		{ // Each point should have at least NUM_CLOSEST_RELATIONS stored relations
-			pointRelationCount[rel->pt1]++;
-			pointRelationCount[rel->pt2]++;
-			int relIndex = marker3D.relationDist.size();
-			marker3D.relationDist.push_back(*rel);
-			marker3D.pointRelation[rel->pt1].push_back(relIndex);
-			marker3D.pointRelation[rel->pt2].push_back(relIndex);
-		}
-	}
-
-	// markerDistLookup is now a list of relations sorted by distance with at least NUM_CLOSEST_RELATIONS of the closest relations per point
-}
-
-/*
- * Gets the currently expected blob count of the current target
- */
-int getExpectedBlobCount()
-{
-	return marker3D.markerTemplate.pts.size() < 4? 4 : marker3D.markerTemplate.pts.size();
-}
-
-/*
- * Projects marker into image plane provided translation in centimeters and rotation, both relative to camera
- */
-void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER_POINTS> &mask, const Transform &camera, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float ptScale, float stdDeviation)
-{
-	// Create MVP in camera space, translation in centimeters
-	Eigen::Matrix4f mv = createViewMatrix(camera) * createModelMatrix(translation, rotation, 1.0f);
-	Eigen::Matrix4f mvp = createProjectionMatrix() * mv;
-	// Create random noise generator
-	std::mt19937 gen(std::random_device{}());
-    std::normal_distribution<float> noise(0, stdDeviation);
-	// Project each marker point into image space
-	points2D.clear();
-	for (int i = 0; i < marker3D.markerTemplate.pts.size(); i++)
-	{
-		mask[i] = false;
-		DefMarkerPoint *markerPt = &marker3D.markerTemplate.pts[i];
-		Eigen::Vector4f ptPos(markerPt->pos.x(), markerPt->pos.y(), markerPt->pos.z(), 1.0f);
-		Eigen::Vector4f ptNrm(markerPt->nrm.x(), markerPt->nrm.y(), markerPt->nrm.z(), 0.0f);
-		// Calculate and clip marker points not facing the camera in regards to their field of view
-		ptNrm = (mv * ptNrm).normalized();
-		Eigen::Vector4f viewNrm = (mv * ptPos).normalized();
-		float facing = -ptNrm.dot(viewNrm);
-		float limit = std::cos(markerPt->fov/360*PI);
-		if (facing < limit) continue;
-		// Project point and clip
-		ptPos = mvp * ptPos;
-		ptPos = ptPos / ptPos.w();
-		if (std::abs(ptPos.x()) > 1 || std::abs(ptPos.y()) > 1) continue;
-		// Generate noise
-		const int maxNoise = 3*stdDeviation;
-		float noiseX = noise(gen), noiseY = noise(gen);
-		if (std::abs(noiseX) > maxNoise) noiseX /= std::ceil(std::abs(noiseX)/maxNoise);
-		if (std::abs(noiseY) > maxNoise) noiseY /= std::ceil(std::abs(noiseY)/maxNoise);
-		// Register projected marker point
-		points2D.push_back({
-			(ptPos.x() + 1)/2 * width + noiseX,
-			(ptPos.y() + 1)/2 * height + noiseY,
-			ptScale * 100/translation.z()
-		});
-		mask[i] = true;
-	}
-}
-
-/*
- * Transforms marker points based on translation and rotation
- */
-void transformMarkerPoints(std::vector<Eigen::Vector4f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation)
-{
-	Eigen::Matrix4f m = createModelMatrix(translation, rotation, 1.0f);
-	points3D.clear();
-	for (int i = 0; i < marker3D.markerTemplate.pts.size(); i++)
-	{
-		if (!mask[i]) continue;
-		DefMarkerPoint *markerPt = &marker3D.markerTemplate.pts[i];
-		Eigen::Vector4f ptPos(markerPt->pos.x(), markerPt->pos.y(), markerPt->pos.z(), 1.0f);
-		ptPos = m * ptPos;
-		ptPos = ptPos / ptPos.w();
-		points3D.push_back(ptPos);
-	}
-}
-
-/* Utility */
-
-Eigen::Matrix4f createProjectionMatrix()
-{
-	float zN = 10.0f, zF = 1000.0f; // 0.1m-10m
-	float a = -(zF+zN)/(zF-zN), b = -2*zN*zF/(zF-zN);
-	float sX = (float)(1.0f/std::tan(fovH*PI/360.0f)), sY = (float)(1.0f/std::tan(fovV*PI/360.0f));
-
-	// Projection
-	Eigen::Matrix4f p = Eigen::Matrix4f::Zero();
-	p << sX, 0, 0, 0,
-		0, sY, 0, 0,
-		0, 0, a, b,
-		0, 0, -1, 0;
-
-	return p;
-}
-Eigen::Matrix4f createModelMatrix(const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float scale)
-{
-	// Rotation
-	Eigen::Matrix4f r = Eigen::Matrix4f::Identity();
-	r.block(0,0,3,3) = rotation;
-
-	// Translation + Scale
-	Eigen::Matrix4f ts;
-	ts << scale, 0, 0, translation.x(),
-		  0, scale, 0, translation.y(),
-		  0, 0, scale, translation.z(),
-		  0, 0, 0, 1;
-
-	// Combine to model view projection matrix
-	return ts*r;
-}
-Eigen::Matrix4f createViewMatrix(const Transform &camera)
-{
-	return createModelMatrix(camera.pos, camera.rot, 1).inverse();
-}
-Eigen::Matrix4f createMVP(const Transform &camera, const Eigen::Vector3f &translation, const Eigen::Matrix3f &rotation, float scale)
-{
-	return createProjectionMatrix() * createViewMatrix(camera) * createModelMatrix(translation, rotation, scale);
 }
