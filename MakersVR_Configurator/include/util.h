@@ -59,6 +59,6 @@ void parseConfigFile(std::string path, Config *config);
 /**
  * Parses a Marker Definition from a .obj file
  */
-bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers);
+bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers, int fov);
 
 #endif // UTIL_H

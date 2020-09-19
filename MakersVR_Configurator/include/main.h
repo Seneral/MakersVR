@@ -13,6 +13,7 @@
 #include "testing.hpp"
 #include "calibration.hpp"
 #include "tracking.hpp"
+#include "control.hpp"
 
 #include "GL/glew.h"
 
@@ -34,59 +35,50 @@
 #include <thread>
 #include <bitset>
 
+class CameraFrame;
+class ConfiguratorFrame;
+class ConfiguratorApp;
+
 enum ConfiguratorState
 {
 	STATE_Idle = 0,
 	STATE_Connected,
-	STATE_TestingCalibration,
-	STATE_TestingTracking
+	STATE_Testing
 };
 
 /**
- * Frame with camera view from a (simulated) MarkerDetector
+ * Main configurator logic
  */
-class CameraFrame : public wxFrame
+class ConfiguratorApp : public wxApp
 {
 public:
-	CameraFrame(std::string name);
-	void Repaint();
-	void AssureInit();
+	Config m_config;
+	// Application state
+	enum ConfiguratorState m_state;
+	CommState m_commState;
+	TrackingState m_globalState;
+	// Main GUI frame and camera frames
+	ConfiguratorFrame *m_frame;
+	std::vector<CameraFrame*> m_cameraFrames;
+	// Test thread
+	bool runTestThread;
+	std::thread *testThread;
+
+    ConfiguratorApp() { m_glContext = NULL; m_frame = NULL; testThread = NULL; m_commState.libusb = NULL; }
+	virtual bool OnInit();
+	virtual int OnExit();
+    wxGLContext *GetContext(wxGLCanvas *canvas);
+    CameraState *GetCameraState(CameraFrame *frame);
+    bool SetupComm();
+	void Connect();
+	void Disconnect();
+	void StartTesting(enum ControlPhase phase);
+	void StopTesting();
+	void OnCloseCameraFrame(CameraFrame *frame);
+
 private:
-	wxGLCanvas *m_canvas;
-	void OnClose(wxCloseEvent& event);
-	void OnPaint(wxPaintEvent& event);
-	void OnKeyDown(wxKeyEvent &event);
-	void Render();
+    wxGLContext *m_glContext;
 };
-
-/**
- * Camera State of a MarkerDetector with currently estimated transform, blobs and estimated poses
- */
-typedef struct
-{
-	Camera camera; // Calibration data
-	// Points2D input
-	std::vector<Point> points2D;
-	// Single-Camera state (Calibration)
-	std::vector<Marker> m_markers;
-	std::vector<Point*> m_freeBlobs;
-	std::vector<Eigen::Isometry3f> poses;
-	// Multi-Camera state (Tracking)
-	std::vector<Ray> rays3D;
-	// Ground-Truth values used in testing
-	struct {
-		Eigen::Isometry3f cameraGT;
-		std::bitset<MAX_MARKER_POINTS> markerPtsVisible;
-	} testing;
-} CameraState;
-
-/**
- * MarkerDetector with state and optional camera view frame
- */
-typedef struct {
-	CameraState state;
-	CameraFrame *frame;
-} MarkerDetector;
 
 /**
  * Main configurator window with controls
@@ -108,48 +100,20 @@ private:
 };
 
 /**
- * Main configurator logic
+ * Frame with camera view from a (simulated) MarkerDetector
  */
-class ConfiguratorApp : public wxApp
+class CameraFrame : public wxFrame
 {
 public:
-	// Main GUI frame
-	ConfiguratorFrame *m_frame;
-	// Application and comm state
-	enum ConfiguratorState m_state;
-	CommState m_commState;
-	// Loaded config data
-	Config m_config;
-	// MarkerDetector windows and their state
-	std::vector<MarkerDetector> m_markerDetectors;
-	// Triangulation state
-	std::vector<TriangulatedPoint> points3D;
-	int nonconflictedCount;
-	std::vector<std::vector<int>> conflicts;
-	std::vector<Eigen::Isometry3f> poses3D;
-	// Testing and visualization state
-	std::vector<Ray> rays3D;
-	struct {
-		std::vector<Eigen::Vector3f> triangulatedPoints3D;
-	} testing;
-	// Test thread
-	bool runTestThread;
-	std::thread *testThread;
-
-    ConfiguratorApp() { m_glContext = NULL; m_frame = NULL; testThread = NULL; m_commState.libusb = NULL; }
-	virtual bool OnInit();
-	virtual int OnExit();
-    wxGLContext *GetContext(wxGLCanvas *canvas);
-    CameraState *GetCameraState(CameraFrame *frame);
-    bool SetupComm();
-	void Connect();
-	void Disconnect();
-	void StartTesting(enum ConfiguratorState testingMode);
-	void StopTesting();
-	void OnCloseCameraFrame(CameraFrame *frame);
-
+	CameraFrame(std::string name);
+	void Repaint();
+	void AssureInit();
 private:
-    wxGLContext *m_glContext;
+	wxGLCanvas *m_canvas;
+	void OnClose(wxCloseEvent& event);
+	void OnPaint(wxPaintEvent& event);
+	void OnKeyDown(wxKeyEvent &event);
+	void Render();
 };
 
 #endif // MAIN_H

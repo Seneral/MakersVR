@@ -1,12 +1,15 @@
 {
 	"testsetup" : {
+		"defaultFoV" : 160,
 		"calibrationMarkers" : [
+			"config/Marker_5PointTrapez.obj",
 			"config/Marker_6PointSquare.obj",
 			"config/Marker_5Point.obj",
 			"config/Marker_6Point.obj"
 		],
 		"trackingMarkers" : [
-			"config/Marker_WMRRing.obj"
+			"config/Marker_WMRRing.obj",
+			{ "path": "config/Marker_Sparse.obj", "FoV": 270 }
 		],
 		"cameras" : [
 			{

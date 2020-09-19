@@ -44,37 +44,50 @@ void parseConfigFile(std::string path, Config *config)
 	if (cfg.contains("testsetup"))
 	{
 		auto testsetup = cfg["testsetup"];
+		int defaultFoV = 160;
+		if (testsetup.contains("defaultFoV") )
+		{
+			auto default = testsetup["defaultFoV"];
+			if (default.is_number_integer())
+				defaultFoV = default;
+		}
 		if (testsetup.contains("calibrationMarkers"))
 		{
-			std::vector<std::string> calibrationMarkerFiles;
 			auto markers = testsetup["calibrationMarkers"];
 			if (markers.is_array())
 			{
 				for (auto& md : markers)
+				{
 					if (md.is_string())
-						calibrationMarkerFiles.push_back(md);
+						parseMarkerDataFile(md, &config->testing.calibrationMarkers, defaultFoV);
+					else if (md.is_object())
+					{
+						int FoV = md.contains("FoV") && md["FoV"].is_number_integer()? md["FoV"] : defaultFoV;
+						parseMarkerDataFile(md["path"], &config->testing.calibrationMarkers, FoV);
+					}
+				}
 			}
 			else if (markers.is_string())
-				calibrationMarkerFiles.push_back(markers);
-			// Parse files
-			for (int i = 0; i < calibrationMarkerFiles.size(); i++)
-				parseMarkerDataFile(calibrationMarkerFiles[i], &config->testing.calibrationMarkers);
+				parseMarkerDataFile(markers, &config->testing.calibrationMarkers, defaultFoV);
 		}
 		if (testsetup.contains("trackingMarkers"))
 		{
-			std::vector<std::string> trackingMarkerFiles;
 			auto markers = testsetup["trackingMarkers"];
 			if (markers.is_array())
 			{
 				for (auto& md : markers)
+				{
 					if (md.is_string())
-						trackingMarkerFiles.push_back(md);
+						parseMarkerDataFile(md, &config->testing.trackingMarkers, defaultFoV);
+					else if (md.is_object())
+					{
+						int FoV = md.contains("FoV") && md["FoV"].is_number_integer()? md["FoV"] : defaultFoV;
+						parseMarkerDataFile(md["path"], &config->testing.trackingMarkers, FoV);
+					}
+				}
 			}
 			else if (markers.is_string())
-				trackingMarkerFiles.push_back(markers);
-			// Parse files
-			for (int i = 0; i < trackingMarkerFiles.size(); i++)
-				parseMarkerDataFile(trackingMarkerFiles[i], &config->testing.trackingMarkers);
+				parseMarkerDataFile(markers, &config->testing.trackingMarkers, defaultFoV);
 		}
 		if (testsetup.contains("cameras"))
 		{
@@ -108,7 +121,7 @@ void parseConfigFile(std::string path, Config *config)
 /**
  * Parses a Marker Definition from a .obj file
  */
-bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers)
+bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers, int fov)
 {
 	std::vector<Eigen::Vector3f> verts;
 	std::vector<Eigen::Vector3f> nrms;
@@ -159,7 +172,7 @@ bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers)
 			// Calculate face center as average
 			pt.pos = pt.pos * 100.0f/count;
 			pt.nrm.normalize();
-			pt.fov = 160;
+			pt.fov = (float)fov;
 			curGroup->pts.push_back(pt);
 		}
 		else if (header == "g")

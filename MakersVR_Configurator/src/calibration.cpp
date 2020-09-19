@@ -41,7 +41,8 @@ typedef struct MarkerCandidate
 
 /* Variables */
 
-Camera camera;
+Camera baseCamera;
+DefMarker calibMarker3D;
 
 #ifdef USE_CV
 std::vector<cv::Point3f> cv_marker3DTemplate;
@@ -60,15 +61,15 @@ cv::Matx31d cv_translation;
  */
 void initCalibration(int Width, int Height)
 {
-	camera.width = Width;
-	camera.height = Height;
+	baseCamera.width = Width;
+	baseCamera.height = Height;
 
 #ifdef USE_CV
 	// Init dummy camera matrix
-	float focalLen = (float)camera.width; // Approximation
+	float focalLen = (float)baseCamera.width; // Approximation
 	cv_camMat = cv::Matx33f(
-		focalLen, 0, (float)camera.width/2,
-		0, focalLen, (float)camera.height/2,
+		focalLen, 0, (float)baseCamera.width/2,
+		0, focalLen, (float)baseCamera.height/2,
 		0, 0, 1);
 	cv_distort = cv::Matx14f(0, 0, 0, 0);
 
@@ -76,9 +77,9 @@ void initCalibration(int Width, int Height)
 	double focalLength, aspectRatio;
 	double fovH, fovV;
 	cv::Point2d principalPoint;
-	cv::calibrationMatrixValues(cv_camMat, cv::Size2i(camera.width, camera.height), 3.68f, 2.76f, fovH, fovV, focalLength, principalPoint, aspectRatio);
-	camera.fovH = (float)fovH;
-	camera.fovV = (float)fovV;
+	cv::calibrationMatrixValues(cv_camMat, cv::Size2i(baseCamera.width, baseCamera.height), 3.68f, 2.76f, fovH, fovV, focalLength, principalPoint, aspectRatio);
+	baseCamera.fovH = (float)fovH;
+	baseCamera.fovV = (float)fovV;
 #endif
 }
 
@@ -95,7 +96,7 @@ void cleanCalibration()
  */
 Camera getCalibratedCamera()
 {
-	return camera;
+	return baseCamera;
 }
 
 /**
@@ -248,11 +249,13 @@ void findMarkerCandidates(std::vector<Point> &points2D, std::vector<Marker> &mar
 /**
  * Interprets OpenCV position and rotation in camera spaces and transforms it into correct scene transformations
  */
-void interpretCVSpace(const cv::Matx31d &cvPos, const cv::Matx31d &cvRot, Eigen::Vector3f *position, Eigen::Matrix3f *rotation)
+Eigen::Isometry3f interpretCVSpace(const cv::Matx31d &cvPos, const cv::Matx31d &cvRot)
 {
+	Eigen::Isometry3f pose;
+
 	// Z-Axis of OpenGL/Blender coordinate frame is opposite of OpenCV
 	// OpenGL/Blender is -z foward, +z towards viewer
-	*position = Eigen::Vector3f(cvPos(0), cvPos(1), -cvPos(2));
+	pose.translation() = Eigen::Vector3f(cvPos(0), cvPos(1), -cvPos(2));
 
 	// Convert rodrigues rotation parameters into rotation matrix
 	cv::Matx33d cvRotMat;
@@ -266,52 +269,37 @@ void interpretCVSpace(const cv::Matx31d &cvPos, const cv::Matx31d &cvRot, Eigen:
 	// OpenCV rotation needs to be inverted, in addition to accounting for the z-axis flip
 	rotAngles = Eigen::Vector3f(-rotAngles.x(), -rotAngles.y(), +rotAngles.z());
 	// Convert back to matrix
-	*rotation = getRotationXYZ(rotAngles);
+	pose.linear() = getRotationXYZ(rotAngles);
+
+	return pose;
 }
 
 /**
- * Infer the pose of a set of (likely) markers and the known camera position to transform into world space
+ * Infer the pose of a (likely) marker in camera space given its image points and the intrinsically calibrated camera
  */
-void inferMarkerPoses(std::vector<Marker> &markers2D, const Camera &camera, std::vector<Eigen::Isometry3f> &poses3D)
+Eigen::Isometry3f inferMarkerPose(Marker *marker2D, const Camera &camera)
 {
-	poses3D.clear();
-	poses3D.reserve(markers2D.size());
-
 #ifdef USE_CV
-	// Try to infer pose for each marker
-	for (int m = 0; m < markers2D.size(); m++)
-	{
-		Marker *marker = &markers2D[m];
+	// Create CV 2D array of marker points
+	std::vector<cv::Point2f> cv_points2D {
+		cv::Point2f(marker2D->center->X, marker2D->center->Y),
+		cv::Point2f(marker2D->endA->X, marker2D->endA->Y),
+		cv::Point2f(marker2D->endB->X, marker2D->endB->Y),
+		cv::Point2f(marker2D->header->X, marker2D->header->Y)
+	};
 
-		// Create CV 2D array of marker points
-		std::vector<cv::Point2f> marker2D {
-			cv::Point2f(marker->center->X, marker->center->Y),
-			cv::Point2f(marker->endA->X, marker->endA->Y),
-			cv::Point2f(marker->endB->X, marker->endB->Y),
-			cv::Point2f(marker->header->X, marker->header->Y)
-		};
+	// use solvePnP to recreate rotation and translation
+	cv::solvePnP(cv_marker3DTemplate, cv_points2D, cv_camMat, cv_distort, cv_rotation, cv_translation, false, cv::SOLVEPNP_ITERATIVE);
 
-		// use solvePnP to recreate rotation and translation
-		cv::solvePnP(cv_marker3DTemplate, marker2D, cv_camMat, cv_distort, cv_rotation, cv_translation, false, cv::SOLVEPNP_ITERATIVE);
-
-		// Convert from OpenCV to Blender/OpenGL space
-		Eigen::Vector3f pos;
-		Eigen::Matrix3f rot;
-		interpretCVSpace(cv_translation, cv_rotation, &pos, &rot);
-
-		// Finally, account for camera transform
-		Eigen::Isometry3f pose;
-		pose.linear() = camera.transform.linear() * rot;
-		pose.translation() = camera.transform * pos;
-		poses3D.push_back(pose);
-	}
+	// Convert from OpenCV to Blender/OpenGL space
+	return interpretCVSpace(cv_translation, cv_rotation);
 #endif
 }
 
 /**
- * Infer the pose of a marker given it's image points and the known camera position to transform into world space
+ * Infer the pose of a marker in camera space given its image points and intrinsically calibrated camera
  */
-void inferMarkerPoseGeneric(std::vector<Point> &points2D, const Camera &camera, Eigen::Isometry3f &pose3D)
+Eigen::Isometry3f inferMarkerPoseGeneric(std::vector<Point> &points2D, const Camera &camera)
 {
 #ifdef USE_CV
 	// Create CV 2D array of marker points
@@ -323,14 +311,25 @@ void inferMarkerPoseGeneric(std::vector<Point> &points2D, const Camera &camera, 
 	cv::solvePnP(cv_marker3DTemplate, cv_points2D, cv_camMat, cv_distort, cv_rotation, cv_translation, false, cv::SOLVEPNP_ITERATIVE);
 
 	// Convert from OpenCV to Blender/OpenGL space
-	Eigen::Vector3f pos;
-	Eigen::Matrix3f rot;
-	interpretCVSpace(cv_translation, cv_rotation, &pos, &rot);
-
-	// Account for camera transform
-	pose3D.linear() = camera.transform.linear() * rot;
-	pose3D.translation() = camera.transform * pos;
+	return interpretCVSpace(cv_translation, cv_rotation);
 #endif
+}
+
+/**
+ * Calculate mean squared error in image space of detected pose
+ */
+float calculateMSEGeneric(const Eigen::Isometry3f &pose3D, const Camera &camera, std::vector<Point> &points2D)
+{
+	Eigen::Projective3f p = createProjectionMatrix(camera.fovH, camera.fovV);
+	float mse = 0.0f;
+	for (int i = 0; i < calibMarker3D.pts.size(); i++)
+	{
+		Eigen::Vector2f pt = projectPoint(p, pose3D * calibMarker3D.pts[i].pos).head<2>();
+		Eigen::Vector2f px = Eigen::Vector2f(pt.x()*camera.width/2, pt.y()*camera.height/2);
+		Eigen::Vector2f im = Eigen::Vector2f(points2D[i].X-camera.width/2, points2D[i].Y-camera.height/2);
+		mse += (im-px).squaredNorm();
+	}
+	return mse / calibMarker3D.pts.size();
 }
 
 /**
