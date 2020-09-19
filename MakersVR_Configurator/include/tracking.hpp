@@ -57,6 +57,7 @@ typedef struct
 	DefMarker markerTemplate;
 	std::vector<PointRelation> relationDist; // Shortest neighouring relations of all points, sorted by distance
 	std::vector<std::vector<int>> pointRelation; // Index of relations for each point
+	// TODO: Change to continuous vector, as most subvectors have similar lengths (NUM_CLOSEST_RELATIONS to 2*NUM_CLOSEST_RELATIONS)
 } MarkerLookup;
 
 
@@ -96,7 +97,17 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 /**
  * Detect Markers in the triangulated 3D Point cloud
  */
-void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D);
+void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE);
+
+/**
+ * Matches the current poses to the poses of the last frame using temporal information
+ */
+void matchTrackedPoses(const std::vector<Eigen::Isometry3f> &currentPose, const std::vector<Eigen::Isometry3f> &lastPose, const std::vector<Eigen::Vector3f> &lastDir, const std::vector<float> &lastRot, std::vector<int> &matching);
+
+/**
+ * Accepts the previously calculated matching and updates temporal information
+ */
+void matchAccept(std::vector<Eigen::Isometry3f> &currentPose, std::vector<Eigen::Isometry3f> &lastPose, std::vector<Eigen::Vector3f> &lastDir, std::vector<float> &lastRot, const std::vector<int> &matching);
 
 
 #endif

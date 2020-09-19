@@ -7,7 +7,10 @@
 #ifndef DEF_CALIBRATION
 #define DEF_CALIBRATION
 
+#define MAX_POSE_MSE 0.4f*0.4f
+
 #include "eigenutil.hpp"
+#include "util.h"
 
 #ifdef USE_CV
 #include "opencv2/core.hpp"
@@ -30,8 +33,32 @@ typedef struct Marker
 	Point *header;
 } Marker;
 
+typedef struct TransformCandidate
+{
+	Eigen::Isometry3f transform;
+	float weight;
+	std::vector<std::pair<Eigen::Isometry3f, float>> datapoints;
+} TransformCandidate;
+
+typedef struct TransformSample
+{
+	Eigen::Isometry3f transform;
+	float weight;
+	float stdDeviation;
+} TransformSample;
+
+typedef struct CameraRelation
+{
+	int camA;
+	int camB;
+	TransformSample sample; // Result
+	std::vector<TransformCandidate> candidates;
+} CameraRelation;
+
 
 /* Variables */
+
+extern DefMarker calibMarker3D;
 
 #ifdef USE_CV
 extern std::vector<cv::Point3f> cv_marker3DTemplate;
@@ -55,19 +82,25 @@ void cleanCalibration();
 Camera getCalibratedCamera();
 
 /**
- * Finds all (potential) marker and also returns all free (unassociated) blobs left (Deprecated)
+ * Finds all (potential) marker and also returns all free (unassociated) points left (Deprecated)
  */
-void findMarkerCandidates(std::vector<Point> &blobs, std::vector<Marker> &marker, std::vector<Point*> &freeBlobs);
+void findMarkerCandidates(std::vector<Point> &points2D, std::vector<Marker> &markers2D, std::vector<Point*> &freePoints2D);
 
 /**
- * Infer the pose of a set of (likely) markers and the known camera position to transform into world space
+ * Infer the pose of a (likely) marker in camera space given its image points and the intrinsically calibrated camera
  */
-void inferMarkerPoses(std::vector<Marker> &marker, const Camera &camera, std::vector<Eigen::Isometry3f> &poses);
+Eigen::Isometry3f inferMarkerPose(Marker *marker2D, const Camera &camera);
 
 /**
- * Infer the pose of a marker given it's image points and the known camera position to transform into world space
+ * Infer the pose of a marker in camera space given its image points and intrinsically calibrated camera
  */
-void inferMarkerPoseGeneric(std::vector<Point> &point2D, const Camera &camera, Eigen::Isometry3f &pose);
+Eigen::Isometry3f inferMarkerPoseGeneric(std::vector<Point> &points2D, const Camera &camera);
+
+
+/**
+ * Calculate mean squared error in image space of detected pose
+ */
+float calculateMSEGeneric(const Eigen::Isometry3f &pose3D, const Camera &camera, std::vector<Point> &points2D);
 
 /**
  * Gets the currently expected blob count of the current target

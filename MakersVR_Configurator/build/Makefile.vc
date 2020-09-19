@@ -53,8 +53,8 @@ cflags = -c -EHsc -W3 -MT$(d) -nologo -Iinclude -Iinclude/msvc -DEIGEN_MPL2_ONLY
 {src/}.cpp{$(o)}.obj:
   cl $(cflags) $** -Fo$*.obj
 
-configurator.exe: $(o)/main.obj $(o)/comm.obj $(o)/util.obj $(o)/eigenutil.obj $(o)/testing.obj $(o)/calibration.obj $(o)/tracking.obj $(o)/mesh.obj $(o)/glew.obj
+configurator.exe: $(o)/main.obj $(o)/comm.obj $(o)/util.obj $(o)/testing.obj $(o)/calibration.obj $(o)/tracking.obj $(o)/control.obj $(o)/mesh.obj $(o)/glew.obj
   link -out:$*.exe $** $(wxlibs) "lib/opencv2/opencv_*440$(d).lib" "lib/opencv2/zlib$(d).lib" lib/libusb-1.0.lib /nologo $(ldebug)
 
-emulator.exe: $(o)/main_emulator.obj $(o)/comm.obj $(o)/util.obj $(o)/eigenutil.obj
+emulator.exe: $(o)/main_emulator.obj $(o)/comm.obj $(o)/util.obj
   link -out:$*.exe $** lib/libusb-1.0.lib user32.lib /nologo $(ldebug)

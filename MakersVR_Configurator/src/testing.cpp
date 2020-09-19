@@ -34,8 +34,7 @@ struct Line2D
 
 Mesh *vizCoordCross;
 GLuint vizLinesVBO; // Line buffer for uploading visualization lines to GPU
-DefMarker calibMarker3D;
-
+std::mt19937 gen;
 
 /* Function */
 
@@ -43,6 +42,14 @@ DefMarker calibMarker3D;
  * Initialize resources for testing
  */
 void initTesting()
+{
+	// Create random generator
+	gen = std::mt19937(std::random_device{}());
+}
+/**
+ * Initialize resources for visualization
+ */
+void initVisualization()
 {
 	// Init visualization coordinate cross
 	vizCoordCross = new Mesh ({ POS, COL }, {
@@ -103,8 +110,8 @@ void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER
 	Eigen::Isometry3f mv = createViewMatrix(camera.transform) * transform;
 	Eigen::Projective3f mvp = createProjectionMatrix(camera.fovH, camera.fovV) * mv;
 	// Create random noise generator
-	std::mt19937 gen(std::random_device{}());
     std::normal_distribution<float> noise(0, stdDeviation);
+	const float maxNoise = 3*stdDeviation;
 	// Project each marker point into image space
 	points2D.clear();
 	for (int i = 0; i < marker.pts.size(); i++)
@@ -121,7 +128,6 @@ void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER
 		Eigen::Vector3f ptPos = projectPoint(mvp, markerPt->pos);
 		if (std::abs(ptPos.x()) > 1 || std::abs(ptPos.y()) > 1) continue;
 		// Generate noise
-		const int maxNoise = 3*stdDeviation;
 		float noiseX = noise(gen), noiseY = noise(gen);
 		if (std::abs(noiseX) > maxNoise) noiseX /= std::ceil(std::abs(noiseX)/maxNoise);
 		if (std::abs(noiseY) > maxNoise) noiseY /= std::ceil(std::abs(noiseY)/maxNoise);
@@ -182,7 +188,13 @@ void analyzeTrackingAlgorithm(std::vector<int> &visibleCount, std::bitset<MAX_MA
 		{
 			mk2trMap[i].first = trPt;
 			mk2trMap[i].second = trError;
-			wxLogMessage("Found matching Marker point %d => %d within %f cm!", i, trPt, trError);
+			if (trPt == -1)
+			{
+				wxLogMessage("!!!!!! Could not find matching marker point %d, although it should have been triangulated!", i);
+				continue;
+			}
+			else
+				wxLogMessage("Found matching Marker point %d => %d within %f cm!", i, trPt, trError);
 
 			for (int j = 0; j < marker3D.pointRelation[mkPtA].size(); j++)
 			{
@@ -229,11 +241,11 @@ void analyzeTrackingAlgorithm(std::vector<int> &visibleCount, std::bitset<MAX_MA
 						if (sharedArm = (marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt1 == mkPtB || marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt2 == mkPtB))
 							break;
 
-					wxLogMessage("Found triple (%d - %d / %f - %f), (%d - %d / %f - %f), (%d - %d / %f - %f)! B-A have shared arm: %s!",
+					/*wxLogMessage("Found triple (%d - %d / %f - %f), (%d - %d / %f - %f), (%d - %d / %f - %f)! B-A have shared arm: %s!",
 						mkPtB, mk2trMap[mkPtB].first, mk2trMap[mkPtB].second, 3*points3D[mk2trMap[mkPtB].first].error,
 						mkPtJ, mk2trMap[mkPtJ].first, mk2trMap[mkPtJ].second, 3*points3D[mk2trMap[mkPtJ].first].error,
 						mkPtA, mk2trMap[mkPtA].first, mk2trMap[mkPtA].second, 3*points3D[mk2trMap[mkPtA].first].error,
-						sharedArm? "True" : "False");
+						sharedArm? "True" : "False");*/
 
 				}
 			}
@@ -253,11 +265,11 @@ void analyzeTrackingAlgorithm(std::vector<int> &visibleCount, std::bitset<MAX_MA
 						if (sharedArm = (marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt1 == mkPtB || marker3D.relationDist[marker3D.pointRelation[mkPtA][l]].pt2 == mkPtB))
 							break;
 
-					wxLogMessage("Found triple (%d - %d / %f - %f), (%d - %d / %f - %f), (%d - %d / %f - %f)! B-A have shared arm: %s!",
+					/*wxLogMessage("Found triple (%d - %d / %f - %f), (%d - %d / %f - %f), (%d - %d / %f - %f)! B-A have shared arm: %s!",
 						mkPtB, mk2trMap[mkPtB].first, mk2trMap[mkPtB].second, 3*points3D[mk2trMap[mkPtB].first].error,
 						mkPtJ, mk2trMap[mkPtJ].first, mk2trMap[mkPtJ].second, 3*points3D[mk2trMap[mkPtJ].first].error,
 						mkPtA, mk2trMap[mkPtA].first, mk2trMap[mkPtA].second, 3*points3D[mk2trMap[mkPtA].first].error,
-						sharedArm? "True" : "False");
+						sharedArm? "True" : "False");*/
 				}
 			}
 		}
@@ -371,29 +383,41 @@ void visualizeMarkers(const Camera &camera, const std::vector<Point> &points2D, 
  */
 void visualizePoses(const Camera &camera, const std::vector<Point> &points2D, const std::vector<Marker> &markers2D, const std::vector<Eigen::Isometry3f> &poses3D)
 {
-	Eigen::Projective3f vp = createProjectionMatrix(camera.fovH, camera.fovV) * createViewMatrix(camera.transform);
+	Eigen::Projective3f p = createProjectionMatrix(camera.fovH, camera.fovV);
 
 	// Render all blobs
 	glColor3f(1,0,0);
+	glPointSize(6.0f);
+	glBegin(GL_POINTS);
 	for (int i = 0; i < points2D.size(); i++)
 	{
-		//GLfloat s = points2D[i].S*2.0f;
-		//glPointSize(s <= 1? 1.0f : s);
-		glPointSize(6.0f);
-		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
 		glVertex3f(points2D[i].X/camera.width*2-1, points2D[i].Y/camera.height*2-1, 0.9f);
-		glEnd();
 	}
+	glEnd();
 
 	// Render inferred poses
 	glColor3f(0, 0, 1);
 	glLineWidth(2.0f);
 	for (int i = 0; i < poses3D.size(); i++)
 	{
-		glLoadMatrixf((vp * poses3D[i] * Eigen::Scaling(10.0f)).data());
+		glLoadMatrixf((p * poses3D[i] * Eigen::Scaling(10.0f)).data());
 		vizCoordCross->draw();
 	}
 	glLoadIdentity();
+
+	// Render points of inferred poses
+	glColor3f(0,0,1);
+	glPointSize(4.0f);
+	glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
+	for (int i = 0; i < poses3D.size(); i++)
+	{
+		for (int j = 0; j < calibMarker3D.pts.size(); j++)
+		{
+			Eigen::Vector3f pt = projectPoint(p, poses3D[i] * calibMarker3D.pts[j].pos);
+			glVertex3f(pt.x(), pt.y(), pt.z());
+		}
+	}
+	glEnd();
 
 	// Render marker lines
 	std::vector<struct Line2D> markerLines;

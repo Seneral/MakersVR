@@ -7,7 +7,7 @@
 #ifndef DEF_TESTING
 #define DEF_TESTING
 
-#define CAMERA_NOISE_STDDEV 0.02f
+#define CAMERA_NOISE_STDDEV 0.05f
 
 #include "eigenutil.hpp"
 #include "tracking.hpp"
@@ -21,17 +21,17 @@
  */
 
 
-/* Variables */
-
-extern DefMarker calibMarker3D;
-
-
 /* Functions */
 
 /**
  * Initialize resources for testing
  */
 void initTesting();
+
+/**
+ * Initialize resources for visualization
+ */
+void initVisualization();
 
 /**
  * Cleanup of resources

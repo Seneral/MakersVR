@@ -490,7 +490,7 @@ static void kabsch(MarkerCandidate3D *candidate, const std::vector<TriangulatedP
 /*
  * Detect Markers in the triangulated 3D Point cloud
  */
-void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D)
+void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE)
 {
 //	wxLogMessage("--------------");
 
@@ -786,11 +786,12 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 	{ // Got a candidate
 		MarkerCandidate3D *candidate = &candidates[lowestMSEInd];
 		poses3D.push_back(candidate->estTransform);
-		wxLogMessage("Best candidate %d of %d total with %d points has internal MSE of %f", lowestMSEInd, (int)candidates.size(), (int)candidate->points.size(), lowestMSE);
+		posesMSE.push_back({ lowestMSE, candidate->points.size() });
+//		wxLogMessage("Best candidate %d of %d total with %d points has internal MSE of %f", lowestMSEInd, (int)candidates.size(), (int)candidate->points.size(), lowestMSE);
 	}
 	else
 	{ // No candidate at all
-		wxLogMessage("No candidate has been found! %d points, of those %d not conflicted", (int)points3D.size(), nonconflictedCount);
+		//wxLogMessage("No candidate has been found! %d points, of those %d not conflicted", (int)points3D.size(), nonconflictedCount);
 		for (int i = 0; i < points3D.size(); i++)
 		{
 			float min = 0, max = maxRelevantDistance;
@@ -804,4 +805,106 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 	}
 
 //	wxLogMessage("---------");
+}
+
+/**
+ * Matches the current poses to the poses of the last frame using temporal information
+ */
+void matchTrackedPoses(const std::vector<Eigen::Isometry3f> &currentPose, const std::vector<Eigen::Isometry3f> &lastPose, const std::vector<Eigen::Vector3f> &lastDir, const std::vector<float> &lastRot, std::vector<int> &matching)
+{
+	float t = 1; // TODO: Delta T, just in case of frame drops;
+
+	struct MatchCandidate {
+		int poseC; // Current
+ 		int poseL; // Last
+		float positionalError;
+		float angularError;
+		float directionalError;
+	};
+	matching.resize(currentPose.size());
+	for (int i = 0; i < matching.size(); i++) matching[i] = -1;
+
+	// Step 1: Add all potential matches with large error of margin
+	std::vector<MatchCandidate> candidates;
+	std::vector<std::vector<int>> poseMapC (currentPose.size());
+	std::vector<std::vector<int>> poseMapL (lastPose.size());
+	for (int i = 0; i < lastPose.size(); i++)
+	{
+		Eigen::Vector3f predPos = lastPose[i].translation() + lastDir[i] * t;
+
+		#define REL_ERROR 0.5 * t
+		float acceptedPosErr = lastDir[i].norm() * REL_ERROR + 10;
+		float acceptedPosErrSq = acceptedPosErr*acceptedPosErr;
+		float acceptedRotErr = lastRot[i] * REL_ERROR + (10.0f/180.0f*PI);
+
+		for (int j = 0; j < currentPose.size(); j++)
+		{
+			Eigen::Vector3f diff = currentPose[j].translation()-predPos;
+			float posErrSq = diff.squaredNorm();
+			if (posErrSq < acceptedPosErrSq)
+			{ // Potential match
+				int index = candidates.size();
+				candidates.push_back({
+					j, i, std::sqrt(posErrSq), NAN, NAN
+				});
+				poseMapL[i].push_back(index);
+				poseMapC[j].push_back(index);
+			}
+			else
+			{
+				wxLogMessage("Discarded match %d/%d with error %f > %f", j, i, std::sqrt(posErrSq), std::sqrt(acceptedPosErrSq));
+			}
+		}
+	}
+
+	// Step 2: Register best matches
+	for (int i = 0; i < candidates.size(); i++)
+	{
+		MatchCandidate *candidate = &candidates[i];
+		// TODO: Currently simple check for the best match
+		// might leave some heavily disputed matches (triangle) completely unregistered
+		if (poseMapC[candidate->poseC].size() != 1)
+		{ // Got competitor
+			bool discard = false;
+			for (int j = 0; j < poseMapC[candidate->poseC].size(); j++)
+			{ // Check if there is a better match
+				int can = poseMapC[candidate->poseC][j];
+				if (discard = (can != i && candidates[can].positionalError < candidate->positionalError)) break;
+			}
+			if (discard) break;
+		}
+		if (poseMapL[candidate->poseL].size() != 1)
+		{ // Got competitor
+			bool discard = false;
+			for (int j = 0; j < poseMapL[candidate->poseL].size(); j++)
+			{ // Check if there is a better match
+				int can = poseMapL[candidate->poseL][j];
+				if (discard = (can != i && candidates[can].positionalError < candidate->positionalError)) break;
+			}
+			if (discard) break;
+		}
+		matching[candidate->poseC] = candidate->poseL;
+	}
+}
+
+/**
+ * Accepts the previously calculated matching and updates temporal information
+ */
+void matchAccept(std::vector<Eigen::Isometry3f> &currentPose, std::vector<Eigen::Isometry3f> &lastPose, std::vector<Eigen::Vector3f> &lastDir, std::vector<float> &lastRot, const std::vector<int> &matching)
+{
+	lastDir.resize(currentPose.size());
+	lastRot.resize(currentPose.size());
+	for (int i = 0; i < currentPose.size(); i++)
+	{
+		if (matching[i] != -1)
+		{ // Got a match to track
+			lastDir[i] = currentPose[i].translation()-lastPose[matching[i]].translation();
+			lastRot[i] = Eigen::AngleAxisf(currentPose[i].rotation() * lastPose[matching[i]].rotation().transpose()).angle();
+		}
+		else
+		{
+			lastDir[i] = Eigen::Vector3f::Zero();
+			lastRot[i] = 0;
+		}
+	}
 }
