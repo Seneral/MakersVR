@@ -1,12 +1,12 @@
 # MakersVR
-Welcome to MakersVR, an open source VR hardware project focussed around a cheap optical tracking system. <br>
+Welcome to MakersVR, an open source VR hardware project focused around a cheap optical tracking system. <br>
 The goal of this project is to create a cheap full body tracking solution and provide a basis to develop custom VR hardware on.
 
 ## How does it work?
 The basis is an optical tracking systems with two or more cameras observing multiple active markers made with LEDs. <br>
 The <a href="https://ar-tracking.com/technology/technical-details/">ART system</a> is quite similar and provides a great overview of the general idea. <br>
 Each tracking camera, called <i>Marker Detector</i>, is a Raspberry Pi Zero plus camera. It is executing a Blob Detection algorithm to get the LEDs position in camera space. These are send over a serial connection to a central microcontroller, the <i>Marker Tracker</i>. This serial connection is a CAT6 cable, but is currently used for power, camera sync and UART (might be switched to SPI later). <br>
-The centralized <i>Marker Tracker</i> is currently a STMF103 microcontroller, the cheap Blue Pill board. It is connected to up to three <i>Marker Detectors</i> at once as well as the Host PC over a USB connection. It collects the Blob2D data from each <i>Marker Detector</i> and currently immediately sends it to the Host PC using a isochronous Full-Speed USB 2.0 connection. It also times the frame of each <i>Marker Detector</i> down to 0.1ms and sends synchronization feedback back over the serial connection. <br>
+The centralized <i>Marker Tracker</i> is currently a STM32F103 microcontroller, the cheap Blue Pill board. It is connected to up to three <i>Marker Detectors</i> at once as well as the Host PC over a USB connection. It collects the Blob2D data from each <i>Marker Detector</i> and currently immediately sends it to the Host PC using a isochronous Full-Speed USB 2.0 connection. It also times the frame of each <i>Marker Detector</i> down to 0.1ms and sends synchronization feedback back over the serial connection. <br>
 On the Host PC, the <i>Configurator</i> program (and later the driver) connects to the USB device and 2D Blobs are streamed in. These 2D Blobs are converted to 3D rays using the position of the cameras in the room and the poses of the markers are inferred. This is still in debate on how exactly this will work, there are several approaches that I will be trying out. <br>
 In the Documentation you can find <a href="https://github.com/Seneral/MakersVR/tree/master/Documentation/Design">more detailed design documents</a>, alongside a <a href="https://raw.githubusercontent.com/Seneral/MakersVR/master/Documentation/PreliminaryPartsList.ods">preliminary parts list</a>. This places the currently expected costs between 110€ and 200€, depending on how many and which cameras are used.
 
@@ -34,6 +34,12 @@ Any marker that has LEDs with (relatively) unique distances can be used by readi
   <img alt="LED Prototypes" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/HW_LED_Prototype.jpg" width="60%"/>
   <br>
   LED Prototypes unlit, lit, and in comparison to the brightness of a standard room light from 3 meters away.
+</p>
+Here's a first prototype showing the type of marker I'm going for; a center with electronics and battery (3D Print with minimized PCB in the final version, not this clump of a prototype), and arms with LED spheres at the end. The body is made of polymorph plastic, which allows for quick prototyping similar to 3D-Printing, <a href="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/HW_Marker_PolymorphPlastic.jpg">as seen here</a>.
+<p align="center">
+  <img alt="Marker Prototype" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/HW_Marker_Prototype.jpg" width="71.875%"/>
+  <br>
+  Marker Prototype powered by a 1S LiPo. Proportions and positioning can vary.
 </p>
 One hardware problem I'm still facing is the camera selection. The ecosystem of cameras for the Raspberry Pi is very limited, with the official modules having terribly low field of view, resulting in a smaller tracking volume, and most inofficial modules basing on the older camera module with much worse performance or a completely different chip alltogether with questionable support. Currently, I'm seeing if the Official Camera Module V2 with limited Field of View is viable: <br>
 <p align="center">
