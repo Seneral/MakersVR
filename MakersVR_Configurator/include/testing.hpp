@@ -7,8 +7,6 @@
 #ifndef DEF_TESTING
 #define DEF_TESTING
 
-#define CAMERA_NOISE_STDDEV 0.05f
-
 #include "eigenutil.hpp"
 #include "tracking.hpp"
 #include "calibration.hpp"
@@ -19,6 +17,14 @@
 /*
  * Testing
  */
+
+
+/* Structures */
+
+typedef struct
+{
+	float r,g,b;
+} Color;
 
 
 /* Functions */
@@ -51,7 +57,7 @@ void setActiveTrackingMarker(const DefMarker &markerData);
 /**
  * Projects marker into image plane provided translation in centimeters and rotation, as well as a camera position
  */
-void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER_POINTS> &mask, const DefMarker &marker, const Camera &camera, const Eigen::Isometry3f &transform, float stdDeviation = 0.0f);
+void createMarkerProjection(std::vector<Eigen::Vector2f> &points2D, std::vector<float> &pointSizes, std::bitset<MAX_MARKER_POINTS> &mask, const DefMarker &marker, const Camera &camera, const Eigen::Isometry3f &transform, float stdDeviation = 0.0f);
 
 /**
  * Transforms marker points based on translation and rotation
@@ -64,19 +70,38 @@ void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bi
 void analyzeTrackingAlgorithm(std::vector<int> &visibleCount, std::bitset<MAX_MARKER_POINTS> &triangulationMask, std::vector<TriangulatedPoint> &points3D, Eigen::Isometry3f gt);
 
 /**
- * Visualize multi-camera triangulated markers
- * points2D: Visible points projected into camera view
- * rays3D: rays from all cameras
- * points3D: Points triangulated from the algorithm, without conflicts first
- * nonconflictedCount: Amount of nonconflicted points in points3D
- * triangulatedPoints3D: Points which could have been triangulated (are visible from more than one camera) -- used for testing only
- * poses3D: Inferred 3D poses
+ * Visualize 2D points in pixel space
  */
-void visualizeMarkers(const Camera &camera, const std::vector<Point> &points2D, const std::vector<Ray> &rays3D, const std::vector<TriangulatedPoint> &points3D, int nonconflictedCount, const std::vector<Eigen::Vector3f> &triangulatedPoints3D, const std::vector<Eigen::Isometry3f> &poses3D);
+void visualizePoints2D(const Camera &camera, const std::vector<Eigen::Vector2f> &points2D, Color color = { 1, 0, 0 }, float size = 6.0f, float depth = 0.9f, bool undistort = false);
 
 /**
- * Visualize single-camera poses
+ * Visualize 3D points in world space
  */
-void visualizePoses(const Camera &camera, const std::vector<Point> &points2D, const std::vector<Marker> &markers2D, const std::vector<Eigen::Isometry3f> &poses3D);
+void visualizePoints3D(const Camera &camera, const std::vector<Eigen::Vector3f> &points3D, Color color, float size, float depth = 0);
+
+/**
+ * Visualize poses in camera or world space
+ */
+void visualizePoses(const Camera &camera, const std::vector<Eigen::Isometry3f> &poses3D, bool cameraSpace);
+
+/**
+ * Visualize calibration markers in pixel space
+ */
+void visualizeMarkers(const Camera &camera, const std::vector<Marker> &markers2D);
+
+/**
+ * Visualize 3D Rays in world space
+ */
+void visualizeRays(const Camera &camera, const std::vector<Ray> &rays3D);
+
+/**
+ * Visualize triangulated point cloud in world space
+ */
+void visualizeTriangulation(const Camera &camera, const std::vector<TriangulatedPoint> &points3D, int nonconflictedCount);
+
+/**
+ * Visualize camera distortion using a grid of size num
+ */
+void visualizeDistortion(const Camera &cameraCB, const Camera &cameraGT);
 
 #endif

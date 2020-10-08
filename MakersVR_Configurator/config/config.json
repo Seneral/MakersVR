@@ -1,32 +1,57 @@
 {
 	"testsetup" : {
+		"blobPxStdDev": 0.1,
 		"defaultFoV" : 160,
 		"calibrationMarkers" : [
+			"config/Marker_PadBoard6Pt.obj",
+			"config/Marker_PadBoardGrid.obj",
 			"config/Marker_5PointTrapez.obj",
 			"config/Marker_6PointSquare.obj",
 			"config/Marker_5Point.obj",
 			"config/Marker_6Point.obj"
 		],
 		"trackingMarkers" : [
-			"config/Marker_WMRRing.obj",
-			{ "path": "config/Marker_Sparse.obj", "FoV": 270 }
+			{ "path": "config/Marker_Sparse.obj", "FoV": 270 },
+			"config/Marker_WMRRing.obj"
 		],
 		"cameras" : [
 			{
 				"label" : "Camera 1 Front Right",
 				"position" : "-1.65547 -1.94693 2.460",
-				"rotation" : "60.0 0.0 -40.0"
+				"rotation" : "60.0 0.0 -40.0",
+				"distortion" : "0.132183 -0.186451 0.001267 0.000618 0.0",
+				"fov" : {
+					"sensorSizeX": 3.68,
+					"sensorSizeY": 2.76,
+					"focalLength": 3.04
+				}
 			},
 			{
 				"label" : "Camera 2 Front Left",
 				"position" : "1.65547 -1.94693 2.460",
-				"rotation" : "60.0 0.0 40.0"
+				"rotation" : "60.0 0.0 40.0",
+				"distortion" : "0.132183 -0.186451 0.001267 0.000618 0.0",
+				"fov" : {
+					"sensorSizeX": 3.68,
+					"sensorSizeY": 2.76,
+					"focalLength": 3.04
+				}
 			},
 			{
 				"label" : "Camera 3 Back",
 				"position" : "0.0 1.95684 2.45832",
-				"rotation" : "46.0 0.0 180.0"
+				"rotation" : "46.0 0.0 180.0",
+				"distortion" : "0.132183 -0.186451 0.001267 0.000618 0.0",
+				"fov" : {
+					"sensorSizeX": 3.68,
+					"sensorSizeY": 2.76,
+					"focalLength": 3.04
+				}
 			}
 		]
+	},
+	"tracking" : {
+		"intersectError": 0.05,
+		"sigmaError": 3
 	}
 }

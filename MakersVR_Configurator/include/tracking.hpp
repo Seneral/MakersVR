@@ -86,7 +86,7 @@ void generateLookupTables(MarkerLookup *marker3D);
 /**
  * Infer the pose of a marker given it's image points and the known camera position to transform into world space
  */
-void castRays(const std::vector<Point> &point2D, const Camera &camera, std::vector<Ray> &rays3D);
+void castRays(const std::vector<Eigen::Vector2f> &point2D, const Camera &camera, std::vector<Ray> &rays3D);
 
 /**
  * Calculate the intersection points between rays of separate groups
@@ -97,7 +97,7 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 /**
  * Detect Markers in the triangulated 3D Point cloud
  */
-void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE);
+void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE, float sigmaError = 3);
 
 /**
  * Matches the current poses to the poses of the last frame using temporal information

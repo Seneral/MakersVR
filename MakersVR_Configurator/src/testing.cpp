@@ -71,7 +71,10 @@ void initVisualization()
  */
 void cleanTesting()
 {
-	// TODO
+	if (vizCoordCross != nullptr)
+		delete vizCoordCross;
+	if (vizLinesVBO != 0)
+		glDeleteBuffers(1, &vizLinesVBO);
 }
 
 /**
@@ -104,16 +107,17 @@ void setActiveTrackingMarker(const DefMarker &markerData)
 /**
  * Projects marker into image plane provided translation in centimeters and rotation, both relative to camera
  */
-void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER_POINTS> &mask, const DefMarker &marker, const Camera &camera, const Eigen::Isometry3f &transform, float stdDeviation)
+void createMarkerProjection(std::vector<Eigen::Vector2f> &points2D, std::vector<float> &pointSizes, std::bitset<MAX_MARKER_POINTS> &mask, const DefMarker &marker, const Camera &camera, const Eigen::Isometry3f &transform, float stdDeviation)
 {
 	// Create MVP in camera space, translation in centimeters
 	Eigen::Isometry3f mv = createViewMatrix(camera.transform) * transform;
 	Eigen::Projective3f mvp = createProjectionMatrix(camera.fovH, camera.fovV) * mv;
 	// Create random noise generator
-    std::normal_distribution<float> noise(0, stdDeviation);
+	std::normal_distribution<float> noise(0, stdDeviation);
 	const float maxNoise = 3*stdDeviation;
 	// Project each marker point into image space
-	points2D.clear();
+	points2D.reserve(points2D.size() + marker.pts.size());
+	pointSizes.reserve(pointSizes.size() + marker.pts.size());
 	for (int i = 0; i < marker.pts.size(); i++)
 	{
 		mask[i] = false;
@@ -124,19 +128,23 @@ void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER
 		float facing = -ptNrm.dot(viewNrm);
 		float limit = std::cos(markerPt->fov/360*PI);
 		if (facing < limit) continue;
-		// Project point and clip
-		Eigen::Vector3f ptPos = projectPoint(mvp, markerPt->pos);
-		if (std::abs(ptPos.x()) > 1 || std::abs(ptPos.y()) > 1) continue;
+		// Project point
+		Eigen::Vector3f proj = projectPoint(mvp, markerPt->pos);
+		// Convert to pixel space
+		Eigen::Vector2f ptPos((proj.x()+1)/2*camera.width, (proj.y()+1)/2*camera.height);
+		// Apply distortion
+		ptPos = distortPoint(camera, ptPos);
 		// Generate noise
 		float noiseX = noise(gen), noiseY = noise(gen);
 		if (std::abs(noiseX) > maxNoise) noiseX /= std::ceil(std::abs(noiseX)/maxNoise);
 		if (std::abs(noiseY) > maxNoise) noiseY /= std::ceil(std::abs(noiseY)/maxNoise);
-		// Register projected marker point
-		points2D.push_back({
-			(ptPos.x() + 1)/2 * camera.width + noiseX,
-			(ptPos.y() + 1)/2 * camera.height + noiseY,
-			100/transform.translation().z()
-		});
+		ptPos += Eigen::Vector2f(noiseX, noiseY);
+		// Clip
+		if (ptPos.x() < 0 || ptPos.y() < 0 || ptPos.x() > camera.width || ptPos.y() > camera.height)
+			continue;
+		// Register projected marker point converted to pixel space
+		points2D.push_back(ptPos);
+		pointSizes.push_back(1.0f + 0.1f/proj.z());
 		mask[i] = true;
 	}
 }
@@ -146,12 +154,11 @@ void createMarkerProjection(std::vector<Point> &points2D, std::bitset<MAX_MARKER
  */
 void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const Eigen::Isometry3f &transform)
 {
-	points3D.clear();
+	points3D.reserve(points3D.size() + marker3D.markerTemplate.pts.size());
 	for (int i = 0; i < marker3D.markerTemplate.pts.size(); i++)
 	{
 		if (!mask[i]) continue;
-		DefMarkerPoint *markerPt = &marker3D.markerTemplate.pts[i];
-		points3D.push_back(transform * markerPt->pos);
+		points3D.push_back(transform * marker3D.markerTemplate.pts[i].pos);
 	}
 }
 
@@ -278,15 +285,95 @@ void analyzeTrackingAlgorithm(std::vector<int> &visibleCount, std::bitset<MAX_MA
 }
 
 /**
- * Visualize multi-camera triangulated markers
- * points2D: Visible points projected into camera view
- * rays3D: rays from all cameras
- * points3D: Points triangulated from the algorithm, without conflicts first
- * nonconflictedCount: Amount of nonconflicted points in points3D
- * triangulatedPoints3D: Points which could have been triangulated (are visible from more than one camera) -- used for testing only
- * poses3D: Inferred 3D poses
+ * Visualize 2D points in pixel space
  */
-void visualizeMarkers(const Camera &camera, const std::vector<Point> &points2D, const std::vector<Ray> &rays3D, const std::vector<TriangulatedPoint> &points3D, int nonconflictedCount, const std::vector<Eigen::Vector3f> &triangulatedPoints3D, const std::vector<Eigen::Isometry3f> &poses3D)
+void visualizePoints2D(const Camera &camera, const std::vector<Eigen::Vector2f> &points2D, Color color, float size, float depth, bool undistort)
+{
+	glColor3f(color.r, color.g, color.b);
+	glPointSize(size);
+	glBegin(GL_POINTS);
+	for (int i = 0; i < points2D.size(); i++)
+		glVertex3f(points2D[i].x()/camera.width*2-1, points2D[i].y()/camera.height*2-1, depth);
+	glEnd();
+}
+
+/**
+ * Visualize 3D points in world space
+ */
+void visualizePoints3D(const Camera &camera, const std::vector<Eigen::Vector3f> &points3D, Color color, float size, float depth)
+{
+	Eigen::Projective3f vp = createProjectionMatrix(camera.fovH, camera.fovV) * createViewMatrix(camera.transform);
+	glColor3f(color.r, color.g, color.b);
+	glPointSize(size);
+	glBegin(GL_POINTS);
+	for (int i = 0; i < points3D.size(); i++)
+	{
+		Eigen::Vector3f pt = projectPoint(vp, points3D[i]);
+		glVertex3f(pt.x(), pt.y(), depth == 0? pt.z() : depth);
+	}
+	glEnd();
+}
+
+/**
+ * Visualize poses in camera or world space
+ */
+void visualizePoses(const Camera &camera, const std::vector<Eigen::Isometry3f> &poses3D, bool cameraSpace)
+{
+	Eigen::Projective3f vp = createProjectionMatrix(camera.fovH, camera.fovV);
+	if (!cameraSpace) vp = vp * createViewMatrix(camera.transform);
+
+	// Render poses
+	glColor3f(0, 0, 1);
+	glLineWidth(2.0f);
+	for (int i = 0; i < poses3D.size(); i++)
+	{
+		glLoadMatrixf((vp * poses3D[i] * Eigen::Scaling(10.0f)).data());
+		vizCoordCross->draw();
+	}
+	glLoadIdentity();
+}
+
+/**
+ * Visualize calibration markers in pixel space
+ */
+void visualizeMarkers(const Camera &camera, const std::vector<Marker> &markers2D)
+{
+	// Render marker lines
+	std::vector<struct Line2D> markerLines;
+	for (int m = 0; m < markers2D.size(); m++)
+	{
+		const Marker *marker = &markers2D[m];
+		// Display base
+		markerLines.push_back({
+			marker->pts[1].x() / camera.width * 2 - 1,
+			marker->pts[1].y() / camera.height * 2 - 1,
+			marker->pts[2].x() / camera.width * 2 - 1,
+			marker->pts[2].y() / camera.height * 2 - 1
+		});
+		// Display heading
+		markerLines.push_back({
+			marker->pts[0].x() / camera.width * 2 - 1,
+			marker->pts[0].y() / camera.height * 2 - 1,
+			marker->pts[3].x() / camera.width * 2 - 1,
+			marker->pts[3].y() / camera.height * 2 - 1
+		});
+	}
+	if (markerLines.size() > 0)
+	{
+		glLineWidth(2.0f);
+		glColor3f(1, 1, 0);
+		glBindBuffer(GL_ARRAY_BUFFER, vizLinesVBO);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(struct Line2D) * markerLines.size(), &markerLines[0], GL_STREAM_DRAW);
+		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(struct Line2D)/2, (void *)0);
+		glEnableVertexAttribArray(0);
+		glDrawArrays(GL_LINES, 0, (int)markerLines.size()*2);
+	}
+}
+
+/**
+ * Visualize 3D Rays in world space
+ */
+void visualizeRays(const Camera &camera, const std::vector<Ray> &rays3D)
 {
 	Eigen::Projective3f vp = createProjectionMatrix(camera.fovH, camera.fovV) * createViewMatrix(camera.transform);
 
@@ -319,32 +406,17 @@ void visualizeMarkers(const Camera &camera, const std::vector<Point> &points2D, 
 		glEnableVertexAttribArray(0);
 		glDrawArrays(GL_LINES, 0, (int)rayLines.size()*2);
 	}
+}
 
-	// Render all blobs
-/*	glColor3f(1,0,0);
-	for (int i = 0; i < points2D.size(); i++)
-	{
-		//GLfloat s = points2D[i].S*2.0f;
-		//glPointSize(s <= 1? 1.0f : s);
-		glPointSize(6.0f);
-		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
-		glVertex3f(points2D[i].X/width*2-1, points2D[i].Y/height*2-1, 0.9f);
-		glEnd();
-	}*/
-
-	// Testing: Render points which could have been triangulated
-	glColor3f(1,0,0);
-	for (int i = 0; i < triangulatedPoints3D.size(); i++)
-	{
-		Eigen::Vector3f pt = projectPoint(vp, triangulatedPoints3D[i]);
-		glPointSize(6.0f);
-		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
-		glVertex3f(pt.x(), pt.y(), pt.z());
-		glEnd();
-	}
+/**
+ * Visualize triangulated point cloud in world space
+ */
+void visualizeTriangulation(const Camera &camera, const std::vector<TriangulatedPoint> &points3D, int nonconflictedCount)
+{
+	Eigen::Projective3f vp = createProjectionMatrix(camera.fovH, camera.fovV) * createViewMatrix(camera.transform);
 
 	// Render all triangulated points
-	glColor3f(0,1,1);
+	glColor3f(1,0,0);
 	for (int i = 0; i < nonconflictedCount; i++)
 	{
 		Eigen::Vector3f pt = projectPoint(vp, points3D[i].pos);
@@ -353,9 +425,8 @@ void visualizeMarkers(const Camera &camera, const std::vector<Point> &points2D, 
 		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
 		glVertex3f(pt.x(), pt.y(), pt.z());
 		glEnd();
-//		wxLogMessage("Point %d confidence: %f", i, points[i].confidence);
 	}
-	glColor3f(1,1,0);
+	glColor3f(1,0,1);
 	for (int i = nonconflictedCount; i < points3D.size(); i++)
 	{
 		Eigen::Vector3f pt = projectPoint(vp, points3D[i].pos);
@@ -364,89 +435,46 @@ void visualizeMarkers(const Camera &camera, const std::vector<Point> &points2D, 
 		glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
 		glVertex3f(pt.x(), pt.y(), pt.z());
 		glEnd();
-//		wxLogMessage("Conflicted Point %d confidence: %f", i, conflictedPoints[i].confidence);
 	}
-
-	// Render inferred poses
-	glColor3f(0, 0, 1);
-	glLineWidth(2.0f);
-	for (int i = 0; i < poses3D.size(); i++)
-	{
-		glLoadMatrixf((vp * poses3D[i] * Eigen::Scaling(10.0f)).data());
-		vizCoordCross->draw();
-	}
-	glLoadIdentity();
 }
 
 /**
- * Visualize single-camera poses
+ * Visualize camera distortion using a grid of size num
  */
-void visualizePoses(const Camera &camera, const std::vector<Point> &points2D, const std::vector<Marker> &markers2D, const std::vector<Eigen::Isometry3f> &poses3D)
+void visualizeDistortion(const Camera &cameraCB, const Camera &cameraGT)
 {
-	Eigen::Projective3f p = createProjectionMatrix(camera.fovH, camera.fovV);
+	// Camera projections
+	Eigen::Projective3f PGT = createProjectionMatrix(cameraGT.fovH, cameraGT.fovV);
+	Eigen::Projective3f PCB = createProjectionMatrix(cameraCB.fovH, cameraCB.fovV);
 
-	// Render all blobs
-	glColor3f(1,0,0);
-	glPointSize(6.0f);
-	glBegin(GL_POINTS);
-	for (int i = 0; i < points2D.size(); i++)
-	{
-		glVertex3f(points2D[i].X/camera.width*2-1, points2D[i].Y/camera.height*2-1, 0.9f);
-	}
-	glEnd();
+	// Grid parameters
+	int num = 10;
+	float hSize = 150, vSize = 150, dist = 100;
 
-	// Render inferred poses
-	glColor3f(0, 0, 1);
-	glLineWidth(2.0f);
-	for (int i = 0; i < poses3D.size(); i++)
-	{
-		glLoadMatrixf((p * poses3D[i] * Eigen::Scaling(10.0f)).data());
-		vizCoordCross->draw();
-	}
-	glLoadIdentity();
+	// Resulting points
+	std::vector<Eigen::Vector2f> undistorted, distortedGT, distortedCB;
+	undistorted.reserve(num*num);
+	distortedGT.reserve(num*num);
+	distortedCB.reserve(num*num);
 
-	// Render points of inferred poses
-	glColor3f(0,0,1);
-	glPointSize(4.0f);
-	glBegin(GL_POINTS); // Has to be called here to change point size without a separate shader
-	for (int i = 0; i < poses3D.size(); i++)
+	for (int i = 1; i < num+1; i++)
 	{
-		for (int j = 0; j < calibMarker3D.pts.size(); j++)
+		for (int j = 1; j < num+1; j++)
 		{
-			Eigen::Vector3f pt = projectPoint(p, poses3D[i] * calibMarker3D.pts[j].pos);
-			glVertex3f(pt.x(), pt.y(), pt.z());
+			Eigen::Vector3f point (i * hSize/(num+1) - hSize/2, j * vSize/(num+1) - vSize/2, -dist);
+			Eigen::Vector2f projGT = projectPoint(PGT, point).head<2>();
+			Eigen::Vector2f projCB = projectPoint(PCB, point).head<2>();
+			projGT.x() = (projGT.x()+1)/2 * cameraGT.width;
+			projGT.y() = (projGT.y()+1)/2 * cameraGT.height;
+			projCB.x() = (projCB.x()+1)/2 * cameraCB.width;
+			projCB.y() = (projCB.y()+1)/2 * cameraCB.height;
+			undistorted.push_back(projGT);
+			distortedGT.push_back(distortPoint(cameraGT, projGT));
+			distortedCB.push_back(distortPoint(cameraCB, projCB));
 		}
 	}
-	glEnd();
 
-	// Render marker lines
-	std::vector<struct Line2D> markerLines;
-	for (int m = 0; m < markers2D.size(); m++)
-	{
-		const Marker *marker = &markers2D[m];
-		// Display base
-		markerLines.push_back({
-			(marker->endA->X / camera.width - 0.5f) * 2.0f,
-			(marker->endA->Y / camera.height - 0.5f) * 2.0f,
-			(marker->endB->X / camera.width - 0.5f) * 2.0f,
-			(marker->endB->Y / camera.height - 0.5f) * 2.0f
-		});
-		// Display heading
-		markerLines.push_back({
-			(marker->center->X / camera.width - 0.5f) * 2.0f,
-			(marker->center->Y / camera.height - 0.5f) * 2.0f,
-			(marker->header->X / camera.width - 0.5f) * 2.0f,
-			(marker->header->Y / camera.height - 0.5f) * 2.0f
-		});
-	}
-	if (markerLines.size() > 0)
-	{
-		glLineWidth(2.0f);
-		glColor3f(1, 1, 0);
-		glBindBuffer(GL_ARRAY_BUFFER, vizLinesVBO);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(struct Line2D) * markerLines.size(), &markerLines[0], GL_STREAM_DRAW);
-		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(struct Line2D)/2, (void *)0);
-		glEnableVertexAttribArray(0);
-		glDrawArrays(GL_LINES, 0, (int)markerLines.size()*2);
-	}
+	visualizePoints2D(cameraGT, undistorted, { 0,0,1 }, 2.0f, 0.6f);
+	visualizePoints2D(cameraGT, distortedGT, { 0,1,0 }, 2.0f, 0.5f);
+	visualizePoints2D(cameraCB, distortedCB, { 1,1,0 }, 2.0f, 0.4f);
 }

@@ -7,7 +7,6 @@
 #define MAX_CAMERA_COUNT 3
 #define NUM_CLOSEST_RELATIONS 4
 #define MIN_DISTANCE_RELATIONS 2 // cm
-#define SIGMA_ERROR 3 // Sigma value used to account for estimated error of triangulated points
 
 #include "tracking.hpp"
 #include "wxbase.hpp" // wxLog*
@@ -38,6 +37,14 @@ struct MarkerCandidate3D
 	// To get triangulated points: points[points[i]]
 	// To get actual points: marker[pointMap[points3D[i]]]
 	Eigen::Isometry3f estTransform;
+};
+
+struct MatchCandidate {
+	int poseC; // Current
+	int poseL; // Last
+	float positionalError;
+	float angularError;
+	float directionalError;
 };
 
 
@@ -129,13 +136,13 @@ void generateLookupTables(MarkerLookup *marker3D)
 /**
  * Infer the pose of a marker given it's image points and the known camera position to transform into world space
  */
-void castRays(const std::vector<Point> &points2D, const Camera &camera, std::vector<Ray> &rays3D)
+void castRays(const std::vector<Eigen::Vector2f> &points2D, const Camera &camera, std::vector<Ray> &rays3D)
 {
 	Eigen::Projective3f vpInv = camera.transform * createProjectionMatrix(camera.fovH, camera.fovV).inverse();
 	for (int i = 0; i < points2D.size(); i++)
 	{
 		Eigen::Vector3f start = camera.transform.translation();
-		Eigen::Vector3f end(points2D[i].X/camera.width*2-1, points2D[i].Y/camera.height*2-1, 1.0f);
+		Eigen::Vector3f end(points2D[i].x()/camera.width*2-1, points2D[i].y()/camera.height*2-1, 1.0f);
 		end = projectPoint(vpInv, end); // Clip space to world space
 		rays3D.push_back({ start, (end - start).normalized(), 0 });
 	}
@@ -490,7 +497,7 @@ static void kabsch(MarkerCandidate3D *candidate, const std::vector<TriangulatedP
 /*
  * Detect Markers in the triangulated 3D Point cloud
  */
-void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE)
+void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE, float sigmaError)
 {
 //	wxLogMessage("--------------");
 
@@ -532,7 +539,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 	std::vector<bool> assigned;
 	assigned.resize(points3D.size());
 	// Subroutine checking the given triangulated point combination for a match in the marker, already given the possible base matches
-	auto check3PointCandidate = [&points3D, &trRelations, &candidates, &assigned, &bestCandidatePtCount](
+	auto check3PointCandidate = [&points3D, &trRelations, &candidates, &assigned, &bestCandidatePtCount, &sigmaError](
 		PointRelation *trRelBase, PointRelation *trRelArm,
 		int trPtJ, int trPtB, int trPtA,
 		float baseError, float armError,
@@ -620,7 +627,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 							if (assigned[j]) continue;
 							if (candidate->pointMap[j] >= 0) continue;
 							Eigen::Vector3f estMkPos = invTransform * points3D[j].pos.head<3>();
-							float ptError = SIGMA_ERROR * points3D[j].error;
+							float ptError = sigmaError * points3D[j].error;
 							float distFromCoM = (points3D[j].pos.head<3>() - candidate->estTransform.translation()).norm();
 							float errorLimit = ptError + poseError * distFromCoM;
 							for (int k = 0; k < marker3D.markerTemplate.pts.size(); k++)
@@ -686,7 +693,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 			// trRelBase is a relation in the triangulated point cloud which has not been used as a base before
 
 			// Find potential matches for the base using the marker lookup table with distance within the error range
-			float baseError = SIGMA_ERROR * (points3D[trRelBase->pt1].error + points3D[trRelBase->pt2].error);
+			float baseError = sigmaError * (points3D[trRelBase->pt1].error + points3D[trRelBase->pt2].error);
 			auto mkRelBaseRange = std::equal_range(marker3D.relationDist.begin(), marker3D.relationDist.end(), trRelBase->distance, ErrorRangeComp(baseError));
 //			wxLogMessage("Tr Base Relation (%d - %d) of length %f += %f: %d potential matches in marker!", trRelBase->pt1, trRelBase->pt2, trRelBase->distance, baseError, std::distance(mkRelBaseRange.first, mkRelBaseRange.second));
 			if (mkRelBaseRange.first >= mkRelBaseRange.second) continue;
@@ -707,7 +714,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 				// Now we have a set of three points around joint point trRelBase->pt1 which have not been handled before
 				assert(trRelBase->pt1 == trRelArm->pt1);
 
-				float armError = SIGMA_ERROR * (points3D[trRelArm->pt1].error + points3D[trRelArm->pt2].error);
+				float armError = sigmaError * (points3D[trRelArm->pt1].error + points3D[trRelArm->pt2].error);
 //				wxLogMessage("_ - Tr Arm Relation (%d - %d) with length %f += %f!", trRelArm->pt1, trRelArm->pt2, trRelArm->distance, armError);
 
 				// Check 3 points if they are a valid candidate
@@ -736,7 +743,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 				// Now we have a set of three points around joint point trRelBase->pt2 which have not been handled before
 				assert(trRelBase->pt2 == trRelArm->pt1);
 
-				float armError = SIGMA_ERROR * (points3D[trRelArm->pt1].error + points3D[trRelArm->pt2].error);
+				float armError = sigmaError * (points3D[trRelArm->pt1].error + points3D[trRelArm->pt2].error);
 //				wxLogMessage("_ - Tr Arm Relation (%d - %d) with length %f += %f!", trRelArm->pt1, trRelArm->pt2, trRelArm->distance, armError);
 
 				// Check 3 points if they are a valid candidate
@@ -792,7 +799,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 	else
 	{ // No candidate at all
 		//wxLogMessage("No candidate has been found! %d points, of those %d not conflicted", (int)points3D.size(), nonconflictedCount);
-		for (int i = 0; i < points3D.size(); i++)
+		/*for (int i = 0; i < points3D.size(); i++)
 		{
 			float min = 0, max = maxRelevantDistance;
 			if (trRelations[i].size() > 0)
@@ -801,7 +808,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 				max = trRelations[i][trRelations[i].size()-1].distance;
 			}
 			wxLogMessage("--> Point %d got a total of %d points from %f to %f cm", i, (int)trRelations[i].size(), min, max);
-		}
+		}*/
 	}
 
 //	wxLogMessage("---------");
@@ -814,13 +821,6 @@ void matchTrackedPoses(const std::vector<Eigen::Isometry3f> &currentPose, const 
 {
 	float t = 1; // TODO: Delta T, just in case of frame drops;
 
-	struct MatchCandidate {
-		int poseC; // Current
- 		int poseL; // Last
-		float positionalError;
-		float angularError;
-		float directionalError;
-	};
 	matching.resize(currentPose.size());
 	for (int i = 0; i < matching.size(); i++) matching[i] = -1;
 

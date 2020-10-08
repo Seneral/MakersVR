@@ -65,7 +65,7 @@ bool ConfiguratorApp::OnInit()
 
 	// Init pose inference
 	initTesting();
-	initCalibration(camWidth, camHeight);
+	initCalibration();
 	initTracking();
 
 	// Read config
@@ -140,11 +140,23 @@ void ConfiguratorApp::Connect()
 		if (comm_connect(&m_commState, true))
 		{
 			wxLogMessage("Connected to Marker Detector!");
-			// Connected, now create resources and create window
 			m_globalState = {};
-			m_globalState.cameras.push_back({});
-			m_cameraFrames.push_back(new CameraFrame("MakersVR MarkerDetector View"));
+			// Load calibration
+			std::vector<Camera> cameraCalibrations;
+			parseCalibrationFile("config/calib.json", cameraCalibrations);
+			m_globalState.cameras.resize(cameraCalibrations.size());
+			for (int i = 0; i < cameraCalibrations.size(); i++)
+			{
+				CameraState *cam = &m_globalState.cameras[i];
+				cam->camera = cameraCalibrations[i];
+				cam->camera.width = camWidth;
+				cam->camera.height = camHeight;
+				cam->camera.aspect = (float)camWidth/camHeight;
+				m_cameraFrames.push_back(new CameraFrame("MakersVR MarkerDetector View"));
+			}
+			// Enter phase
 			m_state = STATE_Connected;
+			EnterPhase(&m_globalState, PHASE_None);
 		}
 		else
 		{
@@ -181,28 +193,73 @@ void ConfiguratorApp::StartTesting(enum ControlPhase phase)
 	Disconnect();
 	StopTesting();
 	wxLogMessage("Starting testing phase %d!", (int)phase);
+	// Load calibration
+	std::vector<Camera> cameraCalibrations;
+	parseCalibrationFile("config/calib.json", cameraCalibrations);
+	if (cameraCalibrations.size() < m_config.testing.cameraDefinitions.size())
+		phase = PHASE_Calibration_Intrinsic; // Force calibration
+	// Set testing&tracking parameters
+	m_globalState.testing.blobPxStdDev = m_config.testing.blobPxStdDev;
+	m_globalState.tracking.sigmaError = m_config.tracking.sigmaError;
+	m_globalState.tracking.intersectError = m_config.tracking.intersectError;
 	// Add testing cameras
 	for (int i = 0; i < m_config.testing.cameraDefinitions.size(); i++)
 	{
+		DefCamera *def = &m_config.testing.cameraDefinitions[i];
 		CameraState cam = {};
-		cam.testing.camera = getCalibratedCamera();
-		cam.testing.camera.transform = createModelMatrix(m_config.testing.cameraDefinitions[i].pos, m_config.testing.cameraDefinitions[i].rot);
-		// TODO: Load intrinsic calibration
-		cam.camera = getCalibratedCamera();
-		cam.camera.transform = cam.testing.camera.transform;
-		// Debug
-		std::stringstream dbgPos, dbgRot;
-		dbgPos << cam.testing.camera.transform.translation().transpose();
-		dbgRot << getEulerXYZ(cam.testing.camera.transform.rotation()).transpose();
-		wxLogMessage("Cam %s Pos: %s, Rot: %s", m_config.testing.cameraDefinitions[i].label, dbgPos.str(), dbgRot.str());
+		// Ground truth testing camera
+		cam.testing.camera.width = camWidth;
+		cam.testing.camera.height = camHeight;
+		cam.testing.camera.aspect = (float)camWidth/camHeight;
+		cam.testing.camera.fovH = def->fovH; //2* std::atan(3.68f/3.04f/2) / PI * 180.0f;
+		cam.testing.camera.fovV = def->fovV; //2* std::atan(2.76f/3.04f/2) / PI * 180.0f;
+		memcpy(&cam.testing.camera.distortion, def->distortion, sizeof(cam.testing.camera.distortion));
+		//cam.testing.camera.distortion = { 0.132183f, -0.186451f, 0.001267f, 0.000618f, 0.000000f };
+		cam.testing.camera.transform = createModelMatrix(def->pos, def->rot);
+		// Calibrated actual camera
+		if (cameraCalibrations.size() > i)
+			cam.camera = cameraCalibrations[i];
+		cam.camera.width = camWidth;
+		cam.camera.height = camHeight;
+		cam.camera.aspect = (float)camWidth/camHeight;
+		// Register and create frame
 		m_globalState.cameras.push_back(cam);
-		m_cameraFrames.push_back(new CameraFrame(m_config.testing.cameraDefinitions[i].label));
+		m_cameraFrames.push_back(new CameraFrame(def->label));
+
+		{
+			// Debug
+			Camera *tCam = &cam.testing.camera;
+			Camera *cCam = &cam.camera;
+			wxLogMessage("Cam %d labeled %s", i, m_config.testing.cameraDefinitions[i].label);
+			wxLogMessage("Cam %d testing intrinsics: FoV (%f, %f), Distortions (%f, %f, %f, %f, %f)", i, tCam->fovH, tCam->fovV,
+				tCam->distortion.k1, tCam->distortion.k2, tCam->distortion.p1, tCam->distortion.p2, tCam->distortion.k3);
+			if (cCam->fovH != 0)
+			{
+				wxLogMessage("Cam %d calibrated intrinsics: FoV (%f, %f), Distortions (%f, %f, %f, %f, %f)", i, cCam->fovH, cCam->fovV,
+					cCam->distortion.k1, cCam->distortion.k2, cCam->distortion.p1, cCam->distortion.p2, cCam->distortion.k3);
+			}
+			Eigen::Vector3f posGT = tCam->transform.translation();
+			Eigen::Vector3f rotGT = getEulerXYZ(tCam->transform.rotation());
+			wxLogMessage("Cam %d testing transform: Pos (%.2f, %.2f, %.2f), Rot (%.2f, %.2f, %.2f)", i,
+				posGT.x(), posGT.y(), posGT.z(), rotGT.x(), rotGT.y(), rotGT.z());
+			if (cCam->transform.translation().sum() != 0)
+			{
+				Eigen::Vector3f posCB = cCam->transform.translation();
+				Eigen::Vector3f rotCB = getEulerXYZ(cCam->transform.rotation());
+				Eigen::Vector3f tDiff = cCam->transform.translation() - tCam->transform.translation();
+				Eigen::Matrix3f rDiff = tCam->transform.rotation() * cCam->transform.rotation().transpose();
+				float tError = tDiff.norm(), rError = Eigen::AngleAxisf(rDiff).angle()/PI*180;
+				wxLogMessage("Cam %d calibrated transform: Pos (%.2f, %.2f, %.2f), Rot (%.2f, %.2f, %.2f), Error: (%.4fmm, %.4f\u00B0)", i,
+					posCB.x(), posCB.y(), posCB.z(), rotCB.x(), rotCB.y(), rotCB.z(), tError*10, rError);
+			}
+		}
 	}
+	// Initialize state
+	m_state = STATE_Testing;
+	EnterPhase(&m_globalState, phase);
 	// Start test data thread
 	runTestThread = true;
 	if (testThread == NULL) testThread = new std::thread(ThreadSendTestData);
-	m_state = STATE_Testing;
-	EnterPhase(&m_globalState, phase);
 }
 void ConfiguratorApp::StopTesting()
 {
@@ -333,7 +390,7 @@ void ConfiguratorFrame::OnDisconnect(wxCommandEvent &event)
 }
 void ConfiguratorFrame::OnStartTesting(wxCommandEvent &event)
 {
-	wxGetApp().StartTesting(event.GetId() == ID_TestTracking? PHASE_Tracking : PHASE_Calibration_Extrinsic);
+	wxGetApp().StartTesting(event.GetId() == ID_TestTracking? PHASE_Tracking : PHASE_Calibration_Intrinsic);
 }
 void ConfiguratorFrame::OnStopTesting(wxCommandEvent &event)
 {
@@ -435,15 +492,31 @@ void CameraFrame::Render()
 	TrackingState *state = &wxGetApp().m_globalState;
 	CameraState *cam = wxGetApp().GetCameraState(this);
 	if (state->phase == PHASE_Calibration_Intrinsic)
-		visualizePoses(cam->camera, cam->points2D, cam->calibration.markers, cam->calibration.poses);
-	else if (state->phase == PHASE_Calibration_Extrinsic)
-		visualizePoses(cam->camera, cam->points2D, cam->calibration.markers, cam->calibration.poses);
-	else if (state->phase == PHASE_Calibration_Room)
-		visualizePoses(cam->camera, cam->points2D, cam->calibration.markers, cam->calibration.poses);
+	{
+		visualizeDistortion(cam->camera, cam->testing.camera);
+		visualizePoints2D(cam->camera, cam->points2D);
+	}
+	else if (state->phase == PHASE_Calibration_Extrinsic || state->phase == PHASE_Calibration_Room)
+	{
+//		visualizeDistortion(cam->camera, cam->testing.camera);
+		visualizePoints2D(cam->camera, cam->undistorted2D);
+		visualizePoses(cam->camera, cam->extrinsic.poses, true);
+		visualizeMarkers(cam->camera, cam->extrinsic.markers);
+	}
 	else if (state->phase == PHASE_Calibration_Marker)
-		{} // TODO
+	{
+		// TODO
+	}
 	else if (state->phase == PHASE_Tracking)
-		visualizeMarkers(cam->camera, cam->points2D, state->testing.rays3D, state->tracking.points3D, state->tracking.nonconflictedCount, state->testing.triangulatedPoints3D, state->tracking.poses3D);
+	{
+		visualizePoints2D(cam->camera, cam->undistorted2D, { 1, 1, 1 });
+		visualizeRays(cam->camera, state->testing.rays3D);
+		visualizePoses(cam->camera, state->tracking.poses3D, false);
+		visualizeTriangulation(cam->camera, state->tracking.points3D, state->tracking.nonconflictedCount);
+//		visualizePoints3D(cam->camera, state->testing.triangulatedPoints3D, {0,1,0}, 2.0f);
+	}
+	else if (state->phase == PHASE_None)
+		visualizePoints2D(cam->camera, cam->points2D);
 
 	m_canvas->SwapBuffers();
 }
@@ -459,6 +532,7 @@ static Eigen::Vector3f TD (0, 0, 0);
 static Eigen::Vector3f RD (0, 0, 0);
 const float dA = 5, dX = 10;
 static bool updateTestThread = true;
+static int focusOnCamera = 0;
 void CameraFrame::OnKeyDown(wxKeyEvent &event)
 {
 	TrackingState *state = &wxGetApp().m_globalState;
@@ -471,6 +545,15 @@ void CameraFrame::OnKeyDown(wxKeyEvent &event)
 		break;
 	case 'n': case 'N': // Next phase
 		NextPhase(state);
+		break;
+	case '1':
+		focusOnCamera = 0;
+		break;
+	case '2':
+		focusOnCamera = 1;
+		break;
+	case '3':
+		focusOnCamera = 2;
 		break;
 	// Target Marker Rotation
 	case 'q': case 'Q':
@@ -565,8 +648,8 @@ static void ThreadSendTestData()
 			host->m_cameraFrames[m]->AssureInit();
 	}
 
-	// Set current phase
-//	SwitchPhase(state->phase); // Done beforehand
+	state->testing.targetPose = Eigen::Isometry3f::Identity();
+	state->testing.GT = Eigen::Isometry3f::Identity();
 
 	int index = 0;
 	while (host->runTestThread)
@@ -578,26 +661,77 @@ static void ThreadSendTestData()
 
 			// ----- Generate marker pose -----
 
-			Eigen::Isometry3f GT;
-			if (state->phase == PHASE_Calibration_Intrinsic)
-			{ // Marker in front of cameras
-				TGT.z() = (rand()%10000 / 10000.0f) * 200 + 20;
-				TGT.x() = (rand()%10000 / 10000.0f) * TGT.z()/2 - TGT.z()/4;
-				TGT.x() = (rand()%10000 / 10000.0f) * TGT.z()/2 - TGT.z()/4;
-				RGT = Eigen::Vector3f(
-					(rand()%10000 / 10000.0f) * 100 - 50,
-					(rand()%10000 / 10000.0f) * 100 - 50,
-					(rand()%10000 / 10000.0f) * 100 - 50);
-				GT = createModelMatrix(TGT, getRotationZYX(RGT));
-				// Choose camera to put in front of
-				Eigen::Isometry3f camTransform = state->cameras[rand()%3].testing.camera.transform;
-				GT = camTransform * GT;
+			auto genPoseInCamView = [](Camera *camera, float min, float max)
+			{ // Generate pose facing camera withing range min,max
+				const float fov = 0.95f, edge = 1.5f, facing = 30, frontal = 1.8f;
+				auto genExp = [](float pow){
+					float rnd = rand()%10000 / 5000.0f - 1;
+					float exp = std::powf(std::abs(rnd), pow);
+					return rnd > 0? exp : -exp;
+				};
+				Eigen::Vector3f tgtT, tgtR;
+				tgtT.z() = (rand()%10000 / 10000.0f) * -max - min;
+				tgtT.x() = genExp(1/edge) * fov * tgtT.z()*std::sin(camera->fovH/180*PI/2);
+				tgtT.y() = genExp(1/edge) * fov * tgtT.z()*std::sin(camera->fovV/180*PI/2);
+				tgtR = Eigen::Vector3f(
+					genExp(frontal) * facing,
+					genExp(frontal) * facing,
+					genExp(frontal) * facing);
+				return camera->transform * createModelMatrix(tgtT, getRotationZYX(tgtR / 180.0f * PI));
+			};
+			auto genPoseInCamViews = [&genPoseInCamView](Camera *cameraA, Camera *cameraB, float min, float max)
+			{ // Generate pose facing camera withing range min,max
+				Eigen::Isometry3f poseA = genPoseInCamView(cameraA, min, max);
+				Eigen::Isometry3f poseB = genPoseInCamView(cameraB, min, max);
+				// Difference
+				Eigen::Vector3f tDiff = poseA.translation() - poseB.translation();
+				Eigen::Matrix3f rDiff = poseA.rotation() * poseB.rotation().transpose();
+				Eigen::AngleAxisf rDiffAx = Eigen::AngleAxisf(rDiff);
+				// Interpolate
+				poseB.translation() += tDiff/2;
+				rDiffAx.angle() /= 2;
+				poseB.linear() = rDiffAx * poseB.linear();
+				return poseB;
+			};
+			if (state->phase == PHASE_Calibration_Intrinsic || state->phase == PHASE_Calibration_Extrinsic)
+			{
+				if (state->phase == PHASE_Calibration_Intrinsic)
+				{ // Marker in front of cameras
+					Camera *camera = &state->cameras[focusOnCamera].testing.camera;
+					// Generate initial pose
+					if (state->testing.targetPose.translation().norm() == 0)
+						state->testing.targetPose = state->testing.GT = genPoseInCamView(camera, 20, 60);
+					// Generate new target if target is reached
+					if ((state->testing.targetPose.translation() - state->testing.GT.translation()).norm() < 1)
+						state->testing.targetPose = genPoseInCamView(camera, 20, 60);
+				}
+				else if (state->phase == PHASE_Calibration_Extrinsic)
+				{ // Marker facing two cameras
+					Camera *cameraA = &state->cameras[state->calibration.relations[focusOnCamera].camA].testing.camera;
+					Camera *cameraB = &state->cameras[state->calibration.relations[focusOnCamera].camB].testing.camera;
+					// Generate initial pose
+					if (state->testing.targetPose.translation().norm() == 0)
+						state->testing.targetPose = state->testing.GT = genPoseInCamViews(cameraA, cameraB, 100, 200);
+					// Generate new target if target is reached
+					if ((state->testing.targetPose.translation() - state->testing.GT.translation()).norm() < 1)
+						state->testing.targetPose = genPoseInCamViews(cameraA, cameraB, 100, 200);
+				}
+				// Calculate direction
+				Eigen::Vector3f tDiff = state->testing.targetPose.translation() - state->testing.GT.translation();
+				Eigen::Matrix3f rDiff = state->testing.targetPose.rotation() * state->testing.GT.rotation().transpose();
+				Eigen::AngleAxisf rDiffAx = Eigen::AngleAxisf(rDiff);
+				// Lerp GT pose to target
+				const float cmPerSec = 50.0f;
+				float lerp = std::min(1.0f, cmPerSec/testFrameRate / tDiff.norm());
+				state->testing.GT.translation() += tDiff * lerp;
+				rDiffAx.angle() *= lerp;
+				state->testing.GT.linear() = rDiffAx * state->testing.GT.linear();
 			}
 			else if (state->phase == PHASE_Calibration_Room)
 			{ // Marker at origin
-				GT = Eigen::Isometry3f::Identity();
+				state->testing.GT = Eigen::Isometry3f::Identity();
 			}
-			else if (state->phase == PHASE_Calibration_Extrinsic || state->phase == PHASE_Tracking)
+			else if (state->phase == PHASE_Tracking)
 			{ // Moving marker
 				// Generate consistent movement
 				TD += Eigen::Vector3f(
@@ -614,7 +748,7 @@ static void ThreadSendTestData()
 				// Apply
 				TGT += TD;
 				RGT += RD/180.0f*PI;
-				GT = createModelMatrix(TGT, getRotationZYX(RGT));
+				state->testing.GT = createModelMatrix(TGT, getRotationZYX(RGT));
 			}
 
 			if (state->phase == PHASE_Calibration_Intrinsic || state->phase == PHASE_Calibration_Extrinsic || state->phase == PHASE_Calibration_Room)
@@ -627,7 +761,8 @@ static void ThreadSendTestData()
 
 					// Project marker into camera view (simulated test data)
 					camState->points2D.clear();
-					createMarkerProjection(camState->points2D, camState->testing.markerPtsVisible, calibMarker3D, camState->testing.camera, GT, CAMERA_NOISE_STDDEV);
+					camState->pointSizes.clear();
+					createMarkerProjection(camState->points2D, camState->pointSizes, camState->testing.markerPtsVisible, calibMarker3D, camState->testing.camera, state->testing.GT, state->testing.blobPxStdDev);
 					
 					// Assume perfect order of image points
 					//std::random_shuffle(camState->points2D.begin(), camState->points2D.end());
@@ -643,18 +778,15 @@ static void ThreadSendTestData()
 				{
 					CameraState *camState = &state->cameras[m];
 
-					for (int p = 0; p < camState->calibration.poses.size(); p++)
+					for (int p = 0; p < camState->extrinsic.poses.size(); p++)
 					{ // Found marker pose using CV, check against GT (ground truth)
-						Eigen::Isometry3f pose = camState->camera.transform * camState->calibration.poses[p];
-						Eigen::Vector3f tDiff = pose.translation() - GT.translation();
-						Eigen::Matrix3f rDiff = GT.rotation() * pose.rotation().transpose();
-						float tError = tDiff.norm(), rError = Eigen::AngleAxisf(rDiff).angle()/PI*180;
-						float mse = camState->calibration.posesMSE[0];
-						wxLogMessage(L"Cam %d, Pose %d: MSE %f, Error: %fcm / %f\u00B0", m, p, mse, tError, rError);
+						std::pair<float,float> poseError = calculatePoseError(state->testing.GT, camState->testing.camera.transform * camState->extrinsic.poses[p]);
+						float mse = camState->extrinsic.posesMSE[0];
+						wxLogMessage(L"Cam %d, Pose %d: MSE %.4fmpx, Error (%.4fmm, %.4f\u00B0)", m, p, mse*1000, poseError.first*10, poseError.second);
 					}
 
 					// Add origin for orientation
-					//camState->calibration.poses.push_back(Eigen::Isometry3f::Identity());
+					//camState->extrinsic.poses.push_back(Eigen::Isometry3f::Identity());
 				}
 			}
 			else if (state->phase == PHASE_Tracking)
@@ -671,7 +803,8 @@ static void ThreadSendTestData()
 
 					// Project marker into camera view (simulated test data)
 					camState->points2D.clear();
-					createMarkerProjection(camState->points2D, camState->testing.markerPtsVisible, marker3D.markerTemplate, camState->testing.camera, GT, CAMERA_NOISE_STDDEV);
+					camState->pointSizes.clear();
+					createMarkerProjection(camState->points2D, camState->pointSizes, camState->testing.markerPtsVisible, marker3D.markerTemplate, camState->testing.camera, state->testing.GT, state->testing.blobPxStdDev);
 
 					// For testing only, accumulate by how many cameras a point is seen to determine if it is useful for triangulation
 					for (int i = 0; i < visibleCount.size(); i++)
@@ -699,34 +832,35 @@ static void ThreadSendTestData()
 				std::bitset<MAX_MARKER_POINTS> triangulationMask;
 				for (int i = 0; i < visibleCount.size(); i++)
 					triangulationMask.set(i, visibleCount[i] >= 2);
-				transformMarkerPoints(state->testing.triangulatedPoints3D, triangulationMask, GT);
+				state->testing.triangulatedPoints3D.clear();
+				transformMarkerPoints(state->testing.triangulatedPoints3D, triangulationMask, state->testing.GT);
 
 				// Handle detected pose
 				bool wrongPose = false;
 				if (state->tracking.poses3D.size() > 0)
 				{ // Determine pose error
-					int i = 0;
-					Eigen::Isometry3f pose = state->tracking.poses3D[i];
-					Eigen::Vector3f tDiff = pose.translation() - GT.translation();
-					Eigen::Matrix3f rDiff = GT.rotation() * pose.rotation().transpose();
-					float tError = tDiff.norm(), rError = Eigen::AngleAxisf(rDiff).angle()/PI*180;
-					wxLogMessage(L"Pose %d, Points: %d, MSE: %f, Error: %fcm / %f\u00B0", i, state->tracking.posesMSE[i].second, state->tracking.posesMSE[i].first, tError, rError);
-					if (tError > 1 || rError > 2)
-					{ // Pose is wrong
-						wxLogMessage("Pose wrongly detected! Had %d true triangulated marker points!", (int)state->testing.triangulatedPoints3D.size());
-						wrongPose = true;
+					for (int i = 0; i < state->tracking.poses3D.size(); i++)
+					{
+						std::pair<float,float> poseError = calculatePoseError(state->testing.GT, state->tracking.poses3D[i]);
+						std::pair<float,int> poseMSE = state->tracking.posesMSE[i];
+						wxLogMessage(L"Pose %d, Points: %d, MSE: %.4fmm, Error: (%.4fmm, %.4f\u00B0)", i, poseMSE.second, poseMSE.first*10, poseError.first*10, poseError.second);
+						if (poseError.first > 1 || poseError.second > 2)
+						{ // Pose is wrong
+							wxLogMessage("--> WRONG POSE: %d reference points", (int)state->testing.triangulatedPoints3D.size());
+							wrongPose = true;
+						}
 					}
 				}
 				else
 				{ // Pose is missing
-					wxLogMessage("Pose not detected! Had %d true triangulated marker points!", (int)state->testing.triangulatedPoints3D.size());
+					wxLogMessage("--> NO POSE: %d reference points!", (int)state->testing.triangulatedPoints3D.size());
 					wrongPose = true;
 				}
 
 				static int times = 0;
-				if (wrongPose && times++ < 20)
+				if (wrongPose && times++ < 10)
 				{ // Debug circumstances using ground truth in case pose is wrong (or missing)
-					analyzeTrackingAlgorithm(visibleCount, triangulationMask, state->tracking.points3D, GT);
+					analyzeTrackingAlgorithm(visibleCount, triangulationMask, state->tracking.points3D, state->testing.GT);
 					// Interrupt a few times to allow for debugging
 					if (times < 5)
 						wxMessageOutput::Get()->Printf (wxT("Failed to detect pose!"));
@@ -805,25 +939,35 @@ static void onIsochronousIN(uint8_t *data, int length)
 	blobUpdate++;
 	int blobCount = (length-headerSize) / 6;
 
-	CameraState *camState = &wxGetApp().m_globalState.cameras[0];
-
-	// Update list of blobs
-	camState->points2D.resize(blobCount);
-	for (int i = 0; i < blobCount; i++)
+	if (wxGetApp().m_state == STATE_Connected)
 	{
-		Point *point = &camState->points2D[i];
-		int pos = headerSize+i*6;
-		uint16_t *blobData = (uint16_t*)&data[pos];
-		point->X = (float)((double)blobData[0] / 65536.0 * camWidth);
-		point->Y = (float)((double)blobData[1] / 65536.0 * camHeight);
-		point->S = (float)data[pos+4]/2.0f;
-		//col = data[pos+5];
+		CameraState *camState = &wxGetApp().m_globalState.cameras[0];
+
+		// Update list of blobs
+		camState->points2D.clear();
+		camState->pointSizes.clear();
+		camState->points2D.reserve(blobCount);
+		camState->pointSizes.reserve(blobCount);
+		for (int i = 0; i < blobCount; i++)
+		{
+			int pos = headerSize+i*6;
+			uint16_t *blobData = (uint16_t*)&data[pos];
+			float x = (float)((double)blobData[0] / 65536.0);
+			float y = (float)((double)blobData[1] / 65536.0 * camHeight/camWidth);
+			float s = (float)data[pos+4]/2.0f;
+			camState->points2D.push_back(Eigen::Vector2f(x,y));
+			camState->pointSizes.push_back(s);
+		}
+
+		HandleCameraState(&wxGetApp().m_globalState);
+
+		if (wxGetApp().m_cameraFrames.size() > 0 && wxGetApp().m_cameraFrames[0] != NULL)
+			wxGetApp().m_cameraFrames[0]->Repaint();
 	}
-
-	HandleCameraState(&wxGetApp().m_globalState);
-
-	if (wxGetApp().m_cameraFrames[0] != NULL)
-		wxGetApp().m_cameraFrames[0]->Repaint();
+	else
+	{
+		wxLogMessage("Failed to receive blobs as state is not initialized yet!");
+	}
 
 #ifdef DEBUG_BLOBS_IN
 	if (blobCount > 0 || blobUpdate % 100 == 0)

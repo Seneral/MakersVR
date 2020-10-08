@@ -14,6 +14,7 @@ using json = nlohmann::json;
 #include <iostream>
 #include <fstream>
 #include <map>
+#include <iomanip>
 
 /**
  * Updates the given statistical value with the new value
@@ -44,6 +45,10 @@ void parseConfigFile(std::string path, Config *config)
 	if (cfg.contains("testsetup"))
 	{
 		auto testsetup = cfg["testsetup"];
+		if (testsetup.contains("blobPxStdDev"))
+		{
+			config->testing.blobPxStdDev = testsetup["blobPxStdDev"].get<float>();
+		}
 		int defaultFoV = 160;
 		if (testsetup.contains("defaultFoV") )
 		{
@@ -97,17 +102,37 @@ void parseConfigFile(std::string path, Config *config)
 				for (auto& cam : cameras) {
 					if (cam.is_object())
 					{
-						DefCamera camera;
+						DefCamera camera = {};
 						// Parse position
-						std::string posStr = cam["position"].get<std::string>();
 						Eigen::Vector3f pos;
-						sscanf(posStr.c_str(), "%f %f %f", &pos.x(), &pos.y(), &pos.z());
+						sscanf(cam["position"].get<std::string>().c_str(), "%f %f %f", &pos.x(), &pos.y(), &pos.z());
 						camera.pos = pos * 100; // m to cm
 						// Parse rotation
-						std::string rotStr = cam["rotation"].get<std::string>();
 						Eigen::Vector3f rotEA;
-						sscanf(rotStr.c_str(), "%f %f %f", &rotEA.x(), &rotEA.y(), &rotEA.z());
+						sscanf(cam["rotation"].get<std::string>().c_str(), "%f %f %f", &rotEA.x(), &rotEA.y(), &rotEA.z());
 						camera.rot = getRotationXYZ(rotEA / 180.0f * PI);
+						// Parse distortions
+						if (cam.contains("distortion") && cam["distortion"].is_string())
+						{
+							sscanf(cam["distortion"].get<std::string>().c_str(), "%f %f %f %f %f",
+								&camera.distortion[0], &camera.distortion[1], &camera.distortion[2], &camera.distortion[3], &camera.distortion[4]);
+						}
+						// Parse fov
+						if (cam.contains("fov"))
+						{
+							if (cam["fov"].is_string())
+							{
+								sscanf(cam["fov"].get<std::string>().c_str(), "%f %f", &camera.fovH, &camera.fovV);
+							}
+							else if (cam["fov"].is_object())
+							{
+								float sensorX = cam["fov"]["sensorSizeX"].get<float>();
+								float sensorY = cam["fov"]["sensorSizeY"].get<float>();
+								float focalLen = cam["fov"]["focalLength"].get<float>();
+								camera.fovH = 2 * std::atan(sensorX/focalLen/2) / PI * 180.0f;
+								camera.fovV = 2 * std::atan(sensorY/focalLen/2) / PI * 180.0f;
+							}
+						}
 						// Parse label and assign
 						camera.label = cam["label"].get<std::string>();
 						config->testing.cameraDefinitions.push_back(camera);
@@ -115,6 +140,15 @@ void parseConfigFile(std::string path, Config *config)
 				}
 			}
 		}
+	}
+
+	if (cfg.contains("tracking"))
+	{
+		auto tracking = cfg["tracking"];
+		if (tracking.contains("intersectError"))
+			config->tracking.intersectError = tracking["intersectError"].get<float>();
+		if (tracking.contains("sigmaError"))
+			config->tracking.sigmaError = tracking["sigmaError"].get<float>();
 	}
 }
 
@@ -198,3 +232,109 @@ bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers, int 
 	return true;
 }
 
+
+/**
+ * Parses the given calibration
+ */
+void parseCalibrationFile(std::string path, std::vector<Camera> &cameraCalib)
+{
+	// Read JSON config file
+	std::ifstream fs(path);
+	if (!fs.is_open()) return;
+	json calib;
+	fs >> calib;
+
+	// Parse JSON calib file
+	if (calib.contains("cameras"))
+	{
+		auto cameras = calib["cameras"];
+		if (cameras.is_array())
+		{
+			cameraCalib.resize(cameras.size());
+			int i = 0;
+			for (auto& cam : cameras)
+			{
+				Camera *clb = &cameraCalib[i++];
+				// Parse intrinsic calibration
+				clb->fovH = cam["fovH"].get<float>();
+				clb->fovV = cam["fovV"].get<float>();
+				if (cam.contains("distortion"))
+				{
+					auto distortion = cam["distortion"];
+					if (distortion.is_object())
+					{
+						auto *dst = &clb->distortion;
+						dst->k1 = distortion["k1"].get<float>();
+						dst->k2 = distortion["k2"].get<float>();
+						dst->k3 = distortion["k3"].get<float>();
+						dst->p1 = distortion["p1"].get<float>();
+						dst->p2 = distortion["p2"].get<float>();
+					}
+				}
+				// Parse extrinsic calibration
+				if (cam.contains("position"))
+				{
+					auto position = cam["position"];
+					if (position.is_object())
+					{
+						clb->transform.translation().x() = position["x"].get<float>();
+						clb->transform.translation().y() = position["y"].get<float>();
+						clb->transform.translation().z() = position["z"].get<float>();
+					}
+				}
+				if (cam.contains("rotation"))
+				{
+					auto rotation = cam["rotation"];
+					if (rotation.is_object())
+					{
+						Eigen::Vector3f rotEA;
+						rotEA.x() = rotation["x"].get<float>();
+						rotEA.y() = rotation["y"].get<float>();
+						rotEA.z() = rotation["z"].get<float>();
+						clb->transform.linear() = getRotationXYZ(rotEA / 180.0f * PI);
+					}
+				}
+			}
+		}
+	}
+}
+
+/**
+ * Writes the given calibration to file
+ */
+void writeCalibrationFile(std::string path, std::vector<Camera> &cameraCalib)
+{
+	json calib;
+
+	// Write JSON calib file
+	calib["cameras"] = json::array();
+	for (int c = 0; c < cameraCalib.size(); c++)
+	{
+		Camera *clb = &cameraCalib[c];
+		json cam;
+		// Write intrinsic calibration
+		cam["fovH"] = clb->fovH;
+		cam["fovV"] = clb->fovV;
+		auto *dst = &clb->distortion;
+		cam["distortion"]["k1"] = dst->k1;
+		cam["distortion"]["k2"] = dst->k2;
+		cam["distortion"]["k3"] = dst->k3;
+		cam["distortion"]["p1"] = dst->p1;
+		cam["distortion"]["p2"] = dst->p2;
+		// Write extrinsic calibration
+		Eigen::Vector3f pos = clb->transform.translation();
+		cam["position"]["x"] = pos.x();
+		cam["position"]["y"] = pos.y();
+		cam["position"]["z"] = pos.z();
+		Eigen::Vector3f rot = getEulerXYZ(clb->transform.rotation()) / PI * 180.0f;
+		cam["rotation"]["x"] = rot.x();
+		cam["rotation"]["y"] = rot.y();
+		cam["rotation"]["z"] = rot.z();
+		calib["cameras"].push_back(cam);
+	}
+
+	// Write JSON config file
+	std::ofstream fs(path);
+	if (!fs.is_open()) return;
+	fs << std::setw(4) << calib;
+}

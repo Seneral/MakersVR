@@ -16,18 +16,19 @@
 
 /* Structures */
 
-typedef struct Point
-{
-	float X;
-	float Y;
-	float S;
-} Point;
-
 typedef struct
 {
 	Eigen::Isometry3f transform;
 	int width, height;
+	float aspect;
 	float fovV, fovH;
+	struct {
+		float k1;
+		float k2;
+		float p1;
+		float p2;
+		float k3;
+	} distortion;
 } Camera;
 
 
@@ -135,6 +136,60 @@ inline Eigen::Vector3f projectPoint(const Eigen::Projective3f &projection, const
 {
 	Eigen::Vector4f projected = projection * Eigen::Vector4f(point.x(), point.y(), point.z(), 1.0f);
 	return projected.head<3>() / projected.w();
+}
+
+/**
+ * Calculates translational and rotational difference between poseA and poseB
+ */
+inline std::pair<float,float> calculatePoseError(const Eigen::Isometry3f &poseA, const Eigen::Isometry3f &poseB)
+{
+	Eigen::Vector3f tDiff = poseB.translation() - poseA.translation();
+	Eigen::Matrix3f rDiff = poseA.rotation() * poseB.rotation().transpose();
+	float tError = tDiff.norm(), rError = Eigen::AngleAxisf(rDiff).angle()/PI*180;
+	return { tError, rError };
+}
+
+/**
+ * Distort the given point in clip space
+ */
+inline Eigen::Vector2f distortPoint(const Camera &camera, Eigen::Vector2f point)
+{
+	auto *dist = &camera.distortion;
+	float fx = camera.width/std::tan(camera.fovH/180.0f*PI/2)/2, fy = camera.height/std::tan(camera.fovV/180.0f*PI/2)/2;
+	float x = (point.x()-camera.width/2)/fx, y = (point.y()-camera.height/2)/fy;
+	float xsq = x*x;
+	float ysq = y*y;
+	float rsq = xsq + ysq;
+	float rd = 1 + rsq * (dist->k1 + rsq * (dist->k2 + (rsq*dist->k3)));
+	float dx = 2*dist->p1*x*y + dist->p2*(rsq+2*xsq);
+	float dy = dist->p1*(rsq+2*ysq) + 2*dist->p2*x*y;
+	float xd = x*rd + dx;
+	float yd = y*rd + dy;
+	return Eigen::Vector2f(xd*fx + camera.width/2, yd*fy + camera.height/2);
+}
+
+/**
+ * Undistorts the given point in pixel space
+ */
+inline Eigen::Vector2f undistortPoint(const Camera &camera, Eigen::Vector2f point)
+{
+	const int iterations = 5;
+	auto *dist = &camera.distortion;
+	float fx = camera.width/std::tan(camera.fovH/180.0f*PI/2)/2, fy = camera.height/std::tan(camera.fovV/180.0f*PI/2)/2;
+	float x = (point.x()-camera.width/2)/fx, y = (point.y()-camera.height/2)/fy;
+	float xu = x, yu = y;
+	for (int i = 0; i < iterations; i++)
+	{
+		float xsq = x*x;
+		float ysq = y*y;
+		float rsq = xsq + ysq;
+		float rd = 1 + rsq * (dist->k1 + rsq * (dist->k2 + (rsq*dist->k3)));
+		float dx = 2*dist->p1*x*y + dist->p2*(rsq+2*xsq);
+		float dy = dist->p1*(rsq+2*ysq) + 2*dist->p2*x*y;
+		xu = (x - dx) / rd;
+		yu = (y - dy) / rd;
+	}
+	return Eigen::Vector2f(xu*fx + camera.width/2, yu*fy + camera.height/2);
 }
 
 #endif
