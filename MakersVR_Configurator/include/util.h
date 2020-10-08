@@ -35,6 +35,8 @@ typedef struct
 	std::string label;
 	Eigen::Vector3f pos;
 	Eigen::Matrix3f rot;
+	float distortion[5];
+	float fovH, fovV;
 } DefCamera;
 
 typedef struct
@@ -43,7 +45,12 @@ typedef struct
 		std::vector<DefMarker> calibrationMarkers;
 		std::vector<DefMarker> trackingMarkers;
 		std::vector<DefCamera> cameraDefinitions;
+		float blobPxStdDev;
 	} testing;
+	struct {
+		float intersectError;
+		float sigmaError;
+	} tracking;
 } Config;
 
 /**
@@ -60,5 +67,15 @@ void parseConfigFile(std::string path, Config *config);
  * Parses a Marker Definition from a .obj file
  */
 bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers, int fov);
+
+/**
+ * Parses the given calibration
+ */
+void parseCalibrationFile(std::string path, std::vector<Camera> &cameraCalib);
+
+/**
+ * Writes the given calibration to file
+ */
+void writeCalibrationFile(std::string path, std::vector<Camera> &cameraCalib);
 
 #endif // UTIL_H

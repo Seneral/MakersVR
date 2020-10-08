@@ -7,9 +7,9 @@
 #ifndef MAIN_H
 #define MAIN_H
 
+#include "eigenutil.hpp"
 #include "util.h"
 #include "comm.h"
-#include "eigenutil.hpp"
 #include "testing.hpp"
 #include "calibration.hpp"
 #include "tracking.hpp"

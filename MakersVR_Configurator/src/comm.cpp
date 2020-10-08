@@ -7,6 +7,13 @@
 #include "comm.h"
 #include "util.h"
 
+#ifdef NO_WX
+#define PRINT printf
+#else
+#include "wxbase.hpp" // wxLog*
+#define PRINT wxLogMessage
+#endif
+
 #define DEBUG_DEVICE_DESC
 #define MEASURE_STALL_RECOVERY
 
@@ -102,7 +109,7 @@ bool comm_check_device(CommState *state)
 	libusb_device_handle *devHandle = NULL;
 	
 	ssize_t devCount = libusb_get_device_list(state->libusb->context, &devList);
-	if (devCount < 0) printf("ERROR: Failed to list devices!\n");
+	if (devCount < 0) PRINT("ERROR: Failed to list devices!");
 
 	for (int i = 0; i < devCount; i++)
 	{
@@ -113,7 +120,7 @@ bool comm_check_device(CommState *state)
 			std::this_thread::sleep_for(std::chrono::milliseconds(50));
 			int e = libusb_open(device, &devHandle);
 			if (e != 0) {
-				printf("ERROR: Failed to open device: %s!\n", libusb_error_name(e));
+				PRINT("ERROR: Failed to open device: %s!", libusb_error_name(e));
 				continue;
 			}
 			libusb_get_string_descriptor_ascii(devHandle, devDesc.iManufacturer, (unsigned char*)strBuf, sizeof(strBuf));
@@ -130,9 +137,9 @@ bool comm_check_device(CommState *state)
 #ifdef DEBUG_DEVICE_DESC /* Print device identification */
 
 	// Product strings
-	printf("VID: %d; PID: %d; Manufacturer: '%s'; ", devDesc.idVendor, devDesc.idProduct, strBuf); 
+	PRINT("VID: %d; PID: %d; Manufacturer: '%s'; ", devDesc.idVendor, devDesc.idProduct, strBuf);
 	libusb_get_string_descriptor_ascii(devHandle, devDesc.iProduct, (unsigned char*)strBuf, sizeof(strBuf));
-	printf("Product: '%s'\n", strBuf);
+	PRINT("Product: '%s'\n", strBuf);
 
 	// Config and interface overview
 	libusb_config_descriptor *configDesc;
@@ -143,12 +150,12 @@ bool comm_check_device(CommState *state)
 		for (int a = 0; a < interface->num_altsetting; a++)
 		{
 			const libusb_interface_descriptor *interfaceDesc = &interface->altsetting[a];
-			printf("Interface %d - %d (C %d, SC %d, P %d) has %d endpoints!\n", interfaceDesc->bInterfaceNumber, interfaceDesc->bAlternateSetting, interfaceDesc->bInterfaceClass, interfaceDesc->bInterfaceSubClass, interfaceDesc->bInterfaceProtocol, interfaceDesc->bNumEndpoints);
+			PRINT("Interface %d - %d (C %d, SC %d, P %d) has %d endpoints!\n", interfaceDesc->bInterfaceNumber, interfaceDesc->bAlternateSetting, interfaceDesc->bInterfaceClass, interfaceDesc->bInterfaceSubClass, interfaceDesc->bInterfaceProtocol, interfaceDesc->bNumEndpoints);
 			for (int e = 0; e < interfaceDesc->bNumEndpoints; e++)
 			{
 				const libusb_endpoint_descriptor *epDesc = &interfaceDesc->endpoint[e];
 				libusb_transfer_type type = (libusb_transfer_type)(epDesc->bmAttributes & 0b11);
-				printf("    %s EP %d has packet size %d and polling interval of %dms!\n",
+				PRINT("    %s EP %d has packet size %d and polling interval of %dms!\n",
 					type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS? "ISO" : (type == LIBUSB_TRANSFER_TYPE_INTERRUPT? "INT" : "Other"),
 					epDesc->bEndpointAddress, epDesc->wMaxPacketSize, epDesc->bInterval);
 			}
@@ -171,14 +178,14 @@ bool comm_connect(CommState *state, bool altSetting)
 		libusb_detach_kernel_driver(state->libusb->devHandle, USBD_INTERFACE);
 	if ((code = libusb_claim_interface(state->libusb->devHandle, USBD_INTERFACE)) != 0)
 	{
-		printf("ERROR: Failed to claim interface: %s\n", libusb_error_name(code));
+		PRINT("ERROR: Failed to claim interface: %s\n", libusb_error_name(code));
 		return false;
 	}
 
 	if (altSetting)
 	{
 		if ((code = libusb_set_interface_alt_setting(state->libusb->devHandle, USBD_INTERFACE, 1)) != 0) {
-			printf("ERROR: Failed to set alternate interface: %s\n", libusb_error_name(code));
+			PRINT("ERROR: Failed to set alternate interface: %s\n", libusb_error_name(code));
 			libusb_release_interface(state->libusb->devHandle, USBD_INTERFACE);
 			return false;
 		}
@@ -215,7 +222,7 @@ bool comm_connect(CommState *state, bool altSetting)
 	if (state->libusb->usbAltSettingISO)
 	{
 		code = libusb_submit_transfer(state->libusb->isoIN[0]);
-		printf("Submit Isochronous transfer 1 (%p): %s!\n", state->libusb->isoIN[0], libusb_error_name(code));
+		PRINT("Submit Isochronous transfer 1 (%p): %s!", state->libusb->isoIN[0], libusb_error_name(code));
 		state->libusb->isoINSubmittedALL = false;
 		state->libusb->isoINSubmitted[0] = true;
 		for (int i = 1; i < NUM_TRANSFERS; i++)
@@ -227,7 +234,7 @@ bool comm_connect(CommState *state, bool altSetting)
 	else
 	{
 		int status = libusb_submit_transfer(state->libusb->intIN);
-		printf("Interrupt transfer value: %s!\n", libusb_error_name(code));
+		PRINT("Interrupt transfer value: %s!", libusb_error_name(code));
 		state->intINPending = true;
 	}
 	state->ctrlINPending = false;
@@ -243,7 +250,7 @@ bool comm_disconnect(CommState *state)
 	if (state->libusb == NULL) return false;
 	state->usbDeviceActive = false;
 	if (!state->libusb->usbDeviceConnected) return false;
-	printf("Disconnecting device...\n");
+	PRINT("Disconnecting device...");
 	state->libusb->usbDeviceConnected = false;
 
 	// Cancel transfers if ongoing
@@ -274,7 +281,7 @@ bool comm_disconnect(CommState *state)
 	memset(state->libusb, 0, sizeof(libusb_state));
 	state->libusb->context = context;
 	
-	printf("Device is disconnected!\n");
+	PRINT("Device is disconnected!");
 	return true;
 }
 
@@ -282,7 +289,7 @@ void comm_exit(CommState *state)
 {
 	if (state->libusb == NULL) return;
 	// Exit
-	printf("Exiting...\n");
+	PRINT("Exiting...");
 	libusb_exit(state->libusb->context);
 	free(state->libusb);
 }
@@ -340,7 +347,7 @@ static void onControlResponse(libusb_transfer *transfer)
 		state->usbDeviceActive = false;
 		return;
 	default:
-		printf("Control IN Transfer completed with status code: %s!\n", libusb_error_name(transfer->status));
+		PRINT("Control IN Transfer completed with status code: %s!", libusb_error_name(transfer->status));
 		return;
 	}
 	
@@ -359,7 +366,7 @@ static void onIsoINSubmission(libusb_transfer *transfer)
 		if (state->libusb->isoINSubmitted[i] == false)
 		{
 			code = libusb_submit_transfer(state->libusb->isoIN[i]);
-			printf("Submit Isochronous transfer %d (%p): %s!\n", i, state->libusb->isoIN[i], libusb_error_name(code));
+			PRINT("Submit Isochronous transfer %d (%p): %s!", i, state->libusb->isoIN[i], libusb_error_name(code));
 			state->libusb->isoINSubmitted[i] = true;
 //			return;
 		}
@@ -378,7 +385,7 @@ static void onIsochronousIN(libusb_transfer *transfer)
 			transfer->callback = NULL; // Signal to not resubmit this transfer
 	}*/
 
-//	printf("Isochronous IN Transfer (%p) completed with status code: %s!\n", transfer, libusb_error_name(transfer->status));
+//	PRINT("Isochronous IN Transfer (%p) completed with status code: %s!", transfer, libusb_error_name(transfer->status));
 	
 	switch (transfer->status)
 	{
@@ -391,7 +398,7 @@ static void onIsochronousIN(libusb_transfer *transfer)
 		// 		By overwriting the transfer callback temporarily
 		if (state->libusb->isoINStalled != NULL)
 		{ // Already handled stall before, stream should already be on it's way
-//			printf("(%p) detected continues stall! Sending signal NULL!\n", transfer);
+//			PRINT("(%p) detected continues stall! Sending signal NULL!", transfer);
 //			transfer->callback = NULL; // Signal to not resubmit this transfer
 //			libusb_submit_transfer(transfer);
 
@@ -407,7 +414,7 @@ static void onIsochronousIN(libusb_transfer *transfer)
 		}
 		else
 		{ // Have not handled stall before, resubmit this transfer to initiate new stream
-			printf("(%p) reported stream interruption!\n", transfer);
+			PRINT("(%p) reported stream interruption!", transfer);
 	#ifdef MEASURE_STALL_RECOVERY
 			g_lastStallStart = std::chrono::high_resolution_clock::now();
 			g_stallTransferCount = 0;
@@ -431,7 +438,7 @@ static void onIsochronousIN(libusb_transfer *transfer)
 		return;
 	case LIBUSB_TRANSFER_CANCELLED: return;
 	default:
-		printf("Isochronous IN Transfer completed with status code: %s!\n", libusb_error_name(transfer->status));
+		PRINT("Isochronous IN Transfer completed with status code: %s!", libusb_error_name(transfer->status));
 		return;
 	}
 	if (state->libusb->isoINStalled == transfer)
@@ -448,7 +455,7 @@ static void onIsochronousIN(libusb_transfer *transfer)
 		auto now = std::chrono::high_resolution_clock::now();
 		float recoveryTime = std::chrono::duration_cast<std::chrono::microseconds>(now - g_lastStallStart).count() / 1000.0f;
 		UpdateStatValue(&g_stallRecovery, recoveryTime);
-		printf("(%p) recovered from stall affecting %d transfers: %.2fms (%.2fms +-%.2fms) - Max %.2fms \n", transfer, g_stallTransferCount.load(), g_stallRecovery.cur, g_stallRecovery.avg, g_stallRecovery.diff, g_stallRecovery.max);
+		PRINT("(%p) recovered from stall affecting %d transfers: %.2fms (%.2fms +-%.2fms) - Max %.2fms", transfer, g_stallTransferCount.load(), g_stallRecovery.cur, g_stallRecovery.avg, g_stallRecovery.diff, g_stallRecovery.max);
 		g_stalling = false;
 	}
 #endif
@@ -457,19 +464,19 @@ static void onIsochronousIN(libusb_transfer *transfer)
 	for (int i = 0; i < transfer->num_iso_packets; i++) 
 	{
 		libusb_iso_packet_descriptor *packet = &transfer->iso_packet_desc[i];
-//		printf("Isochronous IN Transfer Packet %d completed with status code: %s!\n", i, libusb_error_name(packet->status));
+//		PRINT("Isochronous IN Transfer Packet %d completed with status code: %s!", i, libusb_error_name(packet->status));
 		switch (packet->status)
 		{
 		case LIBUSB_TRANSFER_COMPLETED: break;
 		case LIBUSB_TRANSFER_ERROR: continue;
 		default:
-			printf("Isochronous IN Transfer Packet %d completed with status code: %s (%u)!\n", i, libusb_error_name(packet->status), packet->status);
+			PRINT("Isochronous IN Transfer Packet %d completed with status code: %s (%u)!", i, libusb_error_name(packet->status), packet->status);
 			continue;
 		}
 		if (packet->actual_length != 0)
 		{
 			uint8_t* buf = (uint8_t*)libusb_get_iso_packet_buffer(transfer, i);
-//			printf("Iso IN %d: %.*s \n", i, packet->actual_length, buf);
+//			PRINT("Iso IN %d: %.*s", i, packet->actual_length, buf);
 			if (state->onIsochronousIN != NULL)
 				state->onIsochronousIN(buf, packet->actual_length);
 		}
@@ -494,7 +501,7 @@ static void onInterruptIN(libusb_transfer *transfer)
 		return;
 	case LIBUSB_TRANSFER_CANCELLED: return;
 	default:
-		printf("Interrupt IN Transfer completed with status code: %s!\n", libusb_error_name(transfer->status));
+		PRINT("Interrupt IN Transfer completed with status code: %s!", libusb_error_name(transfer->status));
 		return;
 	}
 	
