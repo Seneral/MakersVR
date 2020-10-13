@@ -1,4 +1,13 @@
 {
+	"mode" : {
+		"cameraResolutionX": 1640,
+		"cameraResolutionY": 1232,
+		"cameraFramerate": 20
+	},
+	"tracking" : {
+		"intersectError": 0.05,
+		"sigmaError": 3
+	},
 	"testsetup" : {
 		"blobPxStdDev": 0.1,
 		"defaultFoV" : 160,
@@ -49,9 +58,5 @@
 				}
 			}
 		]
-	},
-	"tracking" : {
-		"intersectError": 0.05,
-		"sigmaError": 3
 	}
 }

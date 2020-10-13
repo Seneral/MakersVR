@@ -10,11 +10,7 @@
 #define MAX_POSE_MSE 0.4f*0.4f
 
 #include "eigenutil.hpp"
-#include "util.h"
-
-#ifdef USE_CV
-#include "opencv2/core.hpp"
-#endif
+#include "util.hpp" // DefMarker
 
 #include <vector>
 #include <map>
@@ -26,46 +22,40 @@
 
 /* Structures */
 
-struct Marker
+struct Marker2D
 {
-	std::vector<Eigen::Vector2f> pts;
-	Marker(int N) : pts(N) {}
-	Marker(std::vector<Eigen::Vector2f> &&PTS)
+	int id;
+	std::vector<Eigen::Vector2f> points;
+	Marker2D(int id, int N) : id(id), points(N) {}
+	Marker2D(int id, std::vector<Eigen::Vector2f> &&PTS)
 	{ // Copy from temporary initializer
-		pts.swap(PTS);
+		this->id = id;
+		points.swap(PTS);
 	}
 };
 
-typedef struct TransformCandidate
+struct TransformCandidate
 {
 	Eigen::Isometry3f transform;
 	float weight;
 	std::vector<std::pair<Eigen::Isometry3f, float>> datapoints;
-} TransformCandidate;
+};
 
-typedef struct TransformSample
+struct TransformSample
 {
 	Eigen::Isometry3f transform;
 	float weight;
 	float stdDeviation;
-} TransformSample;
+};
 
-typedef struct CameraRelation
+struct CameraRelation
 {
 	int camA;
 	int camB;
 	TransformSample sample; // Result
 	std::vector<TransformCandidate> candidates;
-} CameraRelation;
+};
 
-
-/* Variables */
-
-extern DefMarker calibMarker3D;
-
-#ifdef USE_CV
-extern std::vector<cv::Point3f> cv_marker3DTemplate;
-#endif
 
 /* Functions */
 
@@ -80,24 +70,29 @@ void initCalibration();
 void cleanCalibration();
 
 /**
+ * Fill with built-in markers that findMarkerCandidate can detect
+ */
+void getBuiltInMarkers(std::vector<DefMarker> &markers2D);
+
+/**
+ * Returns if marker ID can be detected by findMarkerCandidates
+ */
+bool isMarkerBuiltIn(int id);
+
+/**
  * Finds all (potential) marker and also returns all free (unassociated) points left (Deprecated)
  */
-void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const std::vector<float> &pointSizes, std::vector<Marker> &markers2D, std::vector<int> &freePoints2D);
+void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const std::vector<float> &pointSizes, std::vector<Marker2D> &markers2D, std::vector<int> &freePoints2D);
 
 /**
  * Infer the pose of a (likely) marker in camera space given its image points and the intrinsically calibrated camera
  */
-Eigen::Isometry3f inferMarkerPose(const Camera &camera, const Marker &marker2D);
+Eigen::Isometry3f inferMarkerPose(const Camera &camera, const Marker2D &marker2D, const DefMarker &markerTemplate2D);
 
 /**
  * Calculate mean squared error in image space of detected pose
  */
-float calculateMSE(const Eigen::Isometry3f &pose3D, const Camera &camera, const Marker &marker2D);
-
-/**
- * Gets the currently expected blob count of the current target
- */
-int getExpectedBlobCount();
+float calculateMSE(const Eigen::Isometry3f &pose3D, const Camera &camera, const Marker2D &marker2D, const DefMarker &markerTemplate2D);
 
 /**
  * Adds transform to a candidate within error margin or creates a new one
@@ -117,16 +112,17 @@ void calculateCameraTransforms(std::vector<TransformSample*> &origins, std::vect
 /**
  * Adds markers that add value to the calibration to the calibration selection and adjusts selection parameters
  */
-bool selectMarkersForCalibration(const Camera &camera, const std::vector<Marker> &markers, std::vector<Marker> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, float radialGranularity, float radialTarget, std::vector<std::vector<uint16_t>> &gridBuckets, int gridSize, int gridTarget, float *threshold, int m);
+bool selectMarkersForCalibration(const Camera &camera, const DefMarker &markerTemplate2D, const std::vector<Marker2D> &markers, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, float radialGranularity, float radialTarget, std::vector<std::vector<uint16_t>> &gridBuckets, int gridSize, int gridTarget, float *threshold, int m);
+
 
 /**
- * Calibrate using a range of detected markers, returning standard deviation and outputing individual marker errors
+ * Calibrate using a range of detected markers (each detected marker has to have the same point count as the template and the same ID)
  */
-float calculateIntrinsicCalibration(Camera &camera, const std::vector<Marker> &markers, std::vector<double> &errors);
+float calculateIntrinsicCalibration(Camera &camera, const std::vector<Marker2D> &markers, const DefMarker &markerTemplate2D, std::vector<double> &errors);
 
 /**
  * Takes the calibration selection and filters them using the errors from the last calibration round
  */
-void filterMarkersForCalibration(const Camera &camera, const std::vector<double> &errors, std::vector<Marker> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, std::vector<std::vector<uint16_t>> &gridBuckets, int m);
+void filterMarkersForCalibration(const Camera &camera, const std::vector<double> &errors, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, std::vector<std::vector<uint16_t>> &gridBuckets, int m);
 
 #endif

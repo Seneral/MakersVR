@@ -13,6 +13,7 @@
 
 #include <map>
 #include <thread>
+#include <bitset>
 
 /**
  * Control
@@ -32,17 +33,17 @@ enum ControlPhase
 /**
  * Camera State of a MarkerDetector with currently estimated transform, blobs and estimated poses
  */
-typedef struct
+struct CameraState
 {
 	Camera camera; // Calibration data
 	std::vector<Eigen::Vector2f> points2D; // Points2D input
 	std::vector<Eigen::Vector2f> undistorted2D; // undistorted points2D
 	std::vector<float> pointSizes; // Points2D input
 	struct { // Single-Camera state (Intrinsic calibration)
-		std::vector<Marker> calibrationSelection;
+		std::vector<Marker2D> calibrationSelection;
 		float markerSelectionThreshold;
 		// Current frame state
-		std::vector<Marker> markers;
+		std::vector<Marker2D> markers;
 		std::vector<int> freeBlobs;
 		// Radial marker condition
 		std::multimap<float,uint16_t> markerRadialLookup;
@@ -66,7 +67,7 @@ typedef struct
 		std::vector<TransformCandidate> originCandidates;
 		TransformSample origin; // Result
 		// Current frame state
-		std::vector<Marker> markers;
+		std::vector<Marker2D> markers;
 		std::vector<int> freeBlobs;
 		// Poses of current frame
 		std::vector<Eigen::Isometry3f> poses;
@@ -84,17 +85,21 @@ typedef struct
 		Camera camera;
 		std::bitset<MAX_MARKER_POINTS> markerPtsVisible;
 	} testing;
-} CameraState;
+};
 
-typedef struct
+struct TrackingState
 {
 	enum ControlPhase lastPhase;
 	enum ControlPhase phase;
 	std::vector<CameraState> cameras;
 	struct { // Single-Camera state (Calibration)
+		std::vector<DefMarker> markerTemplates2D;
+		DefMarker *markerTemplate2D;
 		std::vector<CameraRelation> relations;
 	} calibration;
 	struct { // Multi-Camera state (Tracking)
+		std::vector<MarkerTemplate3D> markerTemplates3D;
+		MarkerTemplate3D *markerTemplate3D;
 		float sigmaError;
 		float intersectError;
 		std::vector<TriangulatedPoint> points3D;
@@ -110,7 +115,7 @@ typedef struct
 		std::vector<Eigen::Vector3f> triangulatedPoints3D;
 		float blobPxStdDev;
 	} testing;
-} TrackingState;
+};
 
 /* Functions */
 

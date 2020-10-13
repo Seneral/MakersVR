@@ -14,14 +14,14 @@
 /* Structs and Definitions */
 
 // Type of packed data for vertex attributes
-typedef enum VertexType
+enum VertexType
 {
 	NONE = 0,
 	POS = 1,
 	COL = 2,
 	TEX = 4,
 	NRM = 8,
-} VertexType;
+};
 inline VertexType operator | (VertexType a, VertexType b)
 {
 	return static_cast<VertexType>(static_cast<int>(a) | static_cast<int>(b));

@@ -10,13 +10,10 @@
 #include "Eigen/Core"
 #include "Eigen/Geometry"
 
-#define _USE_MATH_DEFINES
-#include <math.h>
-
 
 /* Structures */
 
-typedef struct
+struct Camera
 {
 	Eigen::Isometry3f transform;
 	int width, height;
@@ -29,12 +26,12 @@ typedef struct
 		float p2;
 		float k3;
 	} distortion;
-} Camera;
+};
 
 
 /* Variables */
 
-static const float PI = (float)M_PI;
+static const float PI = 3.14159265358979323846f;
 
 
 /* Functions */

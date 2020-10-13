@@ -4,19 +4,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#define USE_CV
-
 #include "testing.hpp"
 
-#include "util.h"
 #include "mesh.hpp"
 #include "wxbase.hpp" // wxLog*
 
-//#include <iostream>
-//#include <algorithm>
-//#include <cmath>
 #include <random>
-//#include <set>
 
 
 /* Structures */
@@ -34,18 +27,10 @@ struct Line2D
 
 Mesh *vizCoordCross;
 GLuint vizLinesVBO; // Line buffer for uploading visualization lines to GPU
-std::mt19937 gen;
+std::mt19937 gen = std::mt19937(std::random_device{}());
 
-/* Function */
+/* Functions */
 
-/**
- * Initialize resources for testing
- */
-void initTesting()
-{
-	// Create random generator
-	gen = std::mt19937(std::random_device{}());
-}
 /**
  * Initialize resources for visualization
  */
@@ -69,39 +54,12 @@ void initVisualization()
 /**
  * Cleanup of resources
  */
-void cleanTesting()
+void cleanVisualization()
 {
 	if (vizCoordCross != nullptr)
 		delete vizCoordCross;
 	if (vizLinesVBO != 0)
 		glDeleteBuffers(1, &vizLinesVBO);
-}
-
-/**
- * Sets the specified marker data as the current calibration target
- */
-void setActiveCalibrationMarker(const DefMarker &markerData)
-{
-	calibMarker3D = markerData;
-#ifdef USE_CV
-	cv_marker3DTemplate.clear();
-	for (int i = 0; i < markerData.pts.size(); i++)
-	{
-		const DefMarkerPoint *pt = &markerData.pts[i];
-		cv_marker3DTemplate.push_back(cv::Point3f(pt->pos.x(), pt->pos.y(), pt->pos.z()));
-	}
-#endif
-}
-
-/**
- * Sets the specified marker data as the current tracking target
- */
-void setActiveTrackingMarker(const DefMarker &markerData)
-{
-	// TODO: Copy into custom structure with only 3D points to match calibrated marker data
-	marker3D.markerTemplate = markerData;
-	// Setup lookup tables for quick marker identification
-	generateLookupTables(&marker3D);
 }
 
 /**
@@ -116,12 +74,12 @@ void createMarkerProjection(std::vector<Eigen::Vector2f> &points2D, std::vector<
 	std::normal_distribution<float> noise(0, stdDeviation);
 	const float maxNoise = 3*stdDeviation;
 	// Project each marker point into image space
-	points2D.reserve(points2D.size() + marker.pts.size());
-	pointSizes.reserve(pointSizes.size() + marker.pts.size());
-	for (int i = 0; i < marker.pts.size(); i++)
+	points2D.reserve(points2D.size() + marker.points.size());
+	pointSizes.reserve(pointSizes.size() + marker.points.size());
+	for (int i = 0; i < marker.points.size(); i++)
 	{
 		mask[i] = false;
-		const DefMarkerPoint *markerPt = &marker.pts[i];
+		const DefMarkerPoint *markerPt = &marker.points[i];
 		// Calculate and clip marker points not facing the camera in regards to their field of view
 		Eigen::Vector3f ptNrm = (mv.linear() * markerPt->nrm).normalized();
 		Eigen::Vector3f viewNrm = (mv * markerPt->pos).normalized();
@@ -130,6 +88,9 @@ void createMarkerProjection(std::vector<Eigen::Vector2f> &points2D, std::vector<
 		if (facing < limit) continue;
 		// Project point
 		Eigen::Vector3f proj = projectPoint(mvp, markerPt->pos);
+		// Cull back
+		if (proj.z() < 0)
+			continue;
 		// Convert to pixel space
 		Eigen::Vector2f ptPos((proj.x()+1)/2*camera.width, (proj.y()+1)/2*camera.height);
 		// Apply distortion
@@ -152,33 +113,33 @@ void createMarkerProjection(std::vector<Eigen::Vector2f> &points2D, std::vector<
 /**
  * Transforms marker points based on translation and rotation
  */
-void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const Eigen::Isometry3f &transform)
+void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const MarkerTemplate3D &marker3D, const Eigen::Isometry3f &transform)
 {
-	points3D.reserve(points3D.size() + marker3D.markerTemplate.pts.size());
-	for (int i = 0; i < marker3D.markerTemplate.pts.size(); i++)
+	points3D.reserve(points3D.size() + marker3D.points.size());
+	for (int i = 0; i < marker3D.points.size(); i++)
 	{
 		if (!mask[i]) continue;
-		points3D.push_back(transform * marker3D.markerTemplate.pts[i].pos);
+		points3D.push_back(transform * marker3D.points[i]);
 	}
 }
 
 /**
  * Analyze possibility of tracking algorithm to extract the pose based on ground truth data
  */
-void analyzeTrackingAlgorithm(std::vector<int> &visibleCount, std::bitset<MAX_MARKER_POINTS> &triangulationMask, std::vector<TriangulatedPoint> &points3D, Eigen::Isometry3f gt)
+void analyzeTrackingAlgorithm(const std::vector<int> &visibleCount, const std::bitset<MAX_MARKER_POINTS> &triangulationMask, const std::vector<TriangulatedPoint> &points3D, const MarkerTemplate3D marker3D, Eigen::Isometry3f gt)
 {
 	// Analyze with knowledge which triangulated points could be used for the marker detection
 	std::vector<int> relationMask;
-	relationMask.resize(marker3D.markerTemplate.pts.size());
+	relationMask.resize(marker3D.points.size());
 	std::vector<std::pair<int, float>> mk2trMap;
-	mk2trMap.resize(marker3D.markerTemplate.pts.size());
-	std::vector<PointRelation*> mkRelations;
+	mk2trMap.resize(marker3D.points.size());
+	std::vector<const PointRelation*> mkRelations;
 	
 	for (int i = 0; i < visibleCount.size(); i++)
 	{
 		int mkPtA = i;
 
-		Eigen::Vector3f trPos = gt * marker3D.markerTemplate.pts[i].pos;
+		Eigen::Vector3f trPos = gt * marker3D.points[i];
 		float trError = 9999.0f;
 		int trPt = -1;
 		for (int j = 0; j < points3D.size(); j++)
@@ -206,7 +167,7 @@ void analyzeTrackingAlgorithm(std::vector<int> &visibleCount, std::bitset<MAX_MA
 			for (int j = 0; j < marker3D.pointRelation[mkPtA].size(); j++)
 			{
 				int relInd = marker3D.pointRelation[mkPtA][j];
-				PointRelation *rel = &marker3D.relationDist[relInd];
+				const PointRelation *rel = &marker3D.relationDist[relInd];
 				int mkPtB = rel->pt1 == mkPtA? rel->pt2 : rel->pt1;
 				if (mkPtB > mkPtA && triangulationMask.test(mkPtB))
 				{ // rel could have been inferred in marker, as both points ARE in the triangulated Point Cloud
@@ -336,26 +297,40 @@ void visualizePoses(const Camera &camera, const std::vector<Eigen::Isometry3f> &
 /**
  * Visualize calibration markers in pixel space
  */
-void visualizeMarkers(const Camera &camera, const std::vector<Marker> &markers2D)
+void visualizeMarkers(const Camera &camera, const std::vector<Marker2D> &markers2D)
 {
 	// Render marker lines
 	std::vector<struct Line2D> markerLines;
 	for (int m = 0; m < markers2D.size(); m++)
 	{
-		const Marker *marker = &markers2D[m];
+		const Marker2D *marker = &markers2D[m];
 		// Display base
 		markerLines.push_back({
-			marker->pts[1].x() / camera.width * 2 - 1,
-			marker->pts[1].y() / camera.height * 2 - 1,
-			marker->pts[2].x() / camera.width * 2 - 1,
-			marker->pts[2].y() / camera.height * 2 - 1
+			marker->points[1].x() / camera.width * 2 - 1,
+			marker->points[1].y() / camera.height * 2 - 1,
+			marker->points[2].x() / camera.width * 2 - 1,
+			marker->points[2].y() / camera.height * 2 - 1
 		});
-		// Display heading
+		// Display spine
 		markerLines.push_back({
-			marker->pts[0].x() / camera.width * 2 - 1,
-			marker->pts[0].y() / camera.height * 2 - 1,
-			marker->pts[3].x() / camera.width * 2 - 1,
-			marker->pts[3].y() / camera.height * 2 - 1
+			marker->points[0].x() / camera.width * 2 - 1,
+			marker->points[0].y() / camera.height * 2 - 1,
+			marker->points[3].x() / camera.width * 2 - 1,
+			marker->points[3].y() / camera.height * 2 - 1
+		});
+		// Display head left
+		markerLines.push_back({
+			marker->points[3].x() / camera.width * 2 - 1,
+			marker->points[3].y() / camera.height * 2 - 1,
+			marker->points[4].x() / camera.width * 2 - 1,
+			marker->points[4].y() / camera.height * 2 - 1
+		});
+		// Display head right
+		markerLines.push_back({
+			marker->points[3].x() / camera.width * 2 - 1,
+			marker->points[3].y() / camera.height * 2 - 1,
+			marker->points[5].x() / camera.width * 2 - 1,
+			marker->points[5].y() / camera.height * 2 - 1
 		});
 	}
 	if (markerLines.size() > 0)

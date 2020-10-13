@@ -6,6 +6,8 @@ MakersVR_MarkerTracker/build
 MakersVR_Configurator/build/obj
 MakersVR_Configurator/build/*.exe*
 MakersVR_Configurator/*.exe*
+MakersVR_Configurator/*.ilk
+MakersVR_Configurator/*.pdb
 # No lib binaries
 MakersVR_Configurator/lib/opencv2
 MakersVR_Configurator/lib/vc_x64_lib

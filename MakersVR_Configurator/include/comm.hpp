@@ -11,9 +11,8 @@
 
 // Opaque struct
 struct libusb_state;
-typedef struct libusb_state libusb_state;
 
-typedef struct
+struct CommState
 {
 	libusb_state *libusb;
 	std::atomic<bool> usbDeviceActive;
@@ -24,7 +23,7 @@ typedef struct
 	void (*onControlResponse)(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length);
 	void (*onIsochronousIN)(uint8_t *data, int length);
 	void (*onInterruptIN)(uint8_t *data, int length);
-} CommState;
+};
 
 bool comm_init(CommState *state);
 bool comm_check_device(CommState *state);

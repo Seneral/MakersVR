@@ -23,8 +23,8 @@
 #define NOMINMAX
 #include <windows.h>
 
-#include "comm.h"
-#include "util.h"
+#include "comm.hpp"
+#include "util.hpp"
 
 CommState commState;
 
