@@ -4,16 +4,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "util.h"
-#include "eigenutil.hpp"
+#include "util.hpp"
 
 #include "nlohmann/json.hpp"
 using json = nlohmann::json;
 
-#include <algorithm>
-#include <iostream>
 #include <fstream>
-#include <map>
 #include <iomanip>
 
 /**
@@ -42,6 +38,27 @@ void parseConfigFile(std::string path, Config *config)
 	fs >> cfg;
 
 	// Parse JSON config file
+
+	if (cfg.contains("mode"))
+	{
+		auto mode = cfg["mode"];
+		if (mode.contains("cameraResolutionX"))
+			config->mode.cameraResolutionX = mode["cameraResolutionX"].get<int>();
+		if (mode.contains("cameraResolutionY"))
+			config->mode.cameraResolutionY = mode["cameraResolutionY"].get<int>();
+		if (mode.contains("cameraFramerate"))
+			config->mode.cameraFramerate = mode["cameraFramerate"].get<int>();
+	}
+
+	if (cfg.contains("tracking"))
+	{
+		auto tracking = cfg["tracking"];
+		if (tracking.contains("intersectError"))
+			config->tracking.intersectError = tracking["intersectError"].get<float>();
+		if (tracking.contains("sigmaError"))
+			config->tracking.sigmaError = tracking["sigmaError"].get<float>();
+	}
+
 	if (cfg.contains("testsetup"))
 	{
 		auto testsetup = cfg["testsetup"];
@@ -64,16 +81,16 @@ void parseConfigFile(std::string path, Config *config)
 				for (auto& md : markers)
 				{
 					if (md.is_string())
-						parseMarkerDataFile(md, &config->testing.calibrationMarkers, defaultFoV);
+						parseMarkerDataFile(md, config->testing.calibrationMarkers, defaultFoV);
 					else if (md.is_object())
 					{
 						int FoV = md.contains("FoV") && md["FoV"].is_number_integer()? md["FoV"] : defaultFoV;
-						parseMarkerDataFile(md["path"], &config->testing.calibrationMarkers, FoV);
+						parseMarkerDataFile(md["path"], config->testing.calibrationMarkers, FoV);
 					}
 				}
 			}
 			else if (markers.is_string())
-				parseMarkerDataFile(markers, &config->testing.calibrationMarkers, defaultFoV);
+				parseMarkerDataFile(markers, config->testing.calibrationMarkers, defaultFoV);
 		}
 		if (testsetup.contains("trackingMarkers"))
 		{
@@ -83,16 +100,16 @@ void parseConfigFile(std::string path, Config *config)
 				for (auto& md : markers)
 				{
 					if (md.is_string())
-						parseMarkerDataFile(md, &config->testing.trackingMarkers, defaultFoV);
+						parseMarkerDataFile(md, config->testing.trackingMarkers, defaultFoV);
 					else if (md.is_object())
 					{
 						int FoV = md.contains("FoV") && md["FoV"].is_number_integer()? md["FoV"] : defaultFoV;
-						parseMarkerDataFile(md["path"], &config->testing.trackingMarkers, FoV);
+						parseMarkerDataFile(md["path"], config->testing.trackingMarkers, FoV);
 					}
 				}
 			}
 			else if (markers.is_string())
-				parseMarkerDataFile(markers, &config->testing.trackingMarkers, defaultFoV);
+				parseMarkerDataFile(markers, config->testing.trackingMarkers, defaultFoV);
 		}
 		if (testsetup.contains("cameras"))
 		{
@@ -141,21 +158,12 @@ void parseConfigFile(std::string path, Config *config)
 			}
 		}
 	}
-
-	if (cfg.contains("tracking"))
-	{
-		auto tracking = cfg["tracking"];
-		if (tracking.contains("intersectError"))
-			config->tracking.intersectError = tracking["intersectError"].get<float>();
-		if (tracking.contains("sigmaError"))
-			config->tracking.sigmaError = tracking["sigmaError"].get<float>();
-	}
 }
 
 /**
  * Parses a Marker Definition from a .obj file
  */
-bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers, int fov)
+bool parseMarkerDataFile(std::string path, std::vector<DefMarker> &markers, int fov)
 {
 	std::vector<Eigen::Vector3f> verts;
 	std::vector<Eigen::Vector3f> nrms;
@@ -207,7 +215,7 @@ bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers, int 
 			pt.pos = pt.pos * 100.0f/count;
 			pt.nrm.normalize();
 			pt.fov = (float)fov;
-			curGroup->pts.push_back(pt);
+			curGroup->points.push_back(pt);
 		}
 		else if (header == "g")
 		{ // Read next group name and assign current group
@@ -226,7 +234,7 @@ bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers, int 
 		if (group.first != "Base" && group.first != "(null)" && (groups.size() == 1 || group.first != path))
 		{ // Given vertex group (polygroup) is a set of markers
 			group.second.label.assign(group.first);
-			markers->push_back(group.second);
+			markers.push_back(group.second);
 		}
 	}
 	return true;

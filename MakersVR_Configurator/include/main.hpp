@@ -8,14 +8,11 @@
 #define MAIN_H
 
 #include "eigenutil.hpp"
-#include "util.h"
-#include "comm.h"
-#include "testing.hpp"
+#include "util.hpp"
+#include "control.hpp"
 #include "calibration.hpp"
 #include "tracking.hpp"
-#include "control.hpp"
-
-#include "GL/glew.h"
+#include "comm.hpp"
 
 // wxWidgets minimal includes
 #include "wxbase.hpp" // Disables unused libs, and includes wx/log.h
@@ -33,7 +30,6 @@
 
 #include <vector>
 #include <thread>
-#include <bitset>
 
 class CameraFrame;
 class ConfiguratorFrame;

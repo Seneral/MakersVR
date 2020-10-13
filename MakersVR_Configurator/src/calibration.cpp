@@ -4,23 +4,23 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#define USE_CV
-
-#define LINE_MERGE_ANGLE 10
-#define LINE_MAX_CONNECTION_DIST 30 // In percent of full width
-#define MAX_BASE_DIFF 0.2 // Max offset a base center can have relative to base line length
-#define MAX_SIZE_DIFF 4 // Max size factor
-
 #include "calibration.hpp"
+
 #include "wxbase.hpp" // wxLog*
 
 #include <bitset>
 
-#ifdef USE_CV
+#define USE_OPENCV
+#ifdef USE_OPENCV
 // Don't include full library, only needed modules
 #include "opencv2/core.hpp"
 #include "opencv2/calib3d.hpp"
 #endif
+
+// Parameters for findMarkerCandidates
+#define MAX_SIZE_DIFF 4 // Max relative blob size difference
+#define MAX_LENGTH_DIFF 0.1 // Max relative marker length difference
+#define MAX_ANGLE_DIFF 10.0f/180*PI // Max angle difference in radians
 
 /**
  * Calibration
@@ -29,74 +29,73 @@
 
 /* Structures */
 
-typedef struct MarkerCandidate
+struct MarkerCandidate
 {
-	uint8_t c;
-	uint8_t a;
-	uint8_t b;
-	uint8_t h;
+	int id;
+	std::vector<int> points;
 	float error;
-} MarkerCandidate;
-
-
-/* Variables */
-
-DefMarker calibMarker3D;
-
-#ifdef USE_CV
-std::vector<cv::Point3f> cv_marker3DTemplate;
-#endif
+};
 
 
 /* Functions */
 
 /**
- * Initialize resources for calibration
+ * Fill with built-in markers that findMarkerCandidate can detect
  */
-void initCalibration()
+void getBuiltInMarkers(std::vector<DefMarker> &markers2D)
 {
+	markers2D.push_back({
+		0, "Default-6Pt-PadBoard",
+		{ 
+			{ Eigen::Vector3f(   0.0f, -4.572f, 0.0f), Eigen::Vector3f(0,0,1), 160 }, // 3-Base center
+			{ Eigen::Vector3f(-4.572f, -4.572f, 0.0f), Eigen::Vector3f(0,0,1), 160 }, // 3-Base left
+			{ Eigen::Vector3f(+4.572f, -4.572f, 0.0f), Eigen::Vector3f(0,0,1), 160 }, // 3-Base right
+			{ Eigen::Vector3f(   0.0f,    0.0f, 0.0f), Eigen::Vector3f(0,0,1), 160 }, // Center
+			{ Eigen::Vector3f(-2.286f, +4.572f, 0.0f), Eigen::Vector3f(0,0,1), 160 }, // Head left
+			{ Eigen::Vector3f(+2.286f, +4.572f, 0.0f), Eigen::Vector3f(0,0,1), 160 }  // Head right
+		}
+	});
 }
 
 /**
- * Cleanup of resources
+ * Returns if marker ID can be detected by findMarkerCandidates
  */
-void cleanCalibration()
+bool isMarkerBuiltIn(int id)
 {
-
+	return id == 0;
 }
 
 /**
  * Finds all (potential) marker and also returns all free (unassociated) blobs left (Deprecated)
  */
-void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const std::vector<float> &pointSizes, std::vector<Marker> &markers2D, std::vector<int> &freePoints2D)
+void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const std::vector<float> &pointSizes, std::vector<Marker2D> &markers2D, std::vector<int> &freePoints2D)
 {
 	static std::vector<MarkerCandidate> markerCandidates;
-	static std::bitset<128> markerTag;
+	static std::bitset<512> markerTag;
 
 	// Find and extract all markers candidates (base line of 3 dots plus header)
 	// Step 1: Find all base lines (3 points in a straight line with equal distance)
 	// Step 2: For each line, find the leading point on one side
 	markerCandidates.clear();
-	for (uint8_t c = 0; c < points2D.size(); c++)
+	for (int c = 0; c < points2D.size(); c++)
 	{
-
-		for (uint8_t a = 0; a < points2D.size(); a++)
+		for (int a = 0; a < points2D.size(); a++)
 		{
 			if (a == c) continue;
 
 			// Check size difference
-			float sizeMin = std::min(pointSizes[c], pointSizes[a]);
-			float sizeMax = std::max(pointSizes[c], pointSizes[a]);
-			if (sizeMin * MAX_SIZE_DIFF < sizeMax) continue;
+			float sizeMinC = std::min(pointSizes[c], pointSizes[a]);
+			float sizeMaxC = std::max(pointSizes[c], pointSizes[a]);
+			if (sizeMinC * MAX_SIZE_DIFF < sizeMaxC) continue;
 
-			for (uint8_t b = a+1; b < points2D.size(); b++)
+			for (int b = a+1; b < points2D.size(); b++)
 			{
 				if (b == c) continue;
 
 				// Check size difference
-				sizeMin = std::min(sizeMin, pointSizes[b]);
-				sizeMax = std::max(sizeMax, pointSizes[b]);
-				if (sizeMin * MAX_SIZE_DIFF < sizeMax) continue;
+				float sizeMinB = std::min(sizeMinC, pointSizes[b]);
+				float sizeMaxB = std::max(sizeMaxC, pointSizes[b]);
+				if (sizeMinB * MAX_SIZE_DIFF < sizeMaxB) continue;
 
 				// Get point positions
 				Eigen::Vector2f ptC = points2D[c];
@@ -104,19 +103,160 @@ void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const st
 				Eigen::Vector2f ptB = points2D[b];
 
 				// Get base parameters
-				Eigen::Vector2f base = ptA-ptB;
+				Eigen::Vector2f base = ptA - ptB;
 				float baseLen = base.norm();
 
 				// Check if c is at the center of a and b, building a base line
-				float centerDiff = (ptC*2 - ptA - ptB).norm();
-				float centerError = centerDiff / baseLen;
+				float baseCenterDiff = (ptC*2 - ptA - ptB).norm();
+				float baseCenterError = baseCenterDiff / (baseLen/2);
+				if (baseCenterError > MAX_LENGTH_DIFF) continue;
+				
+				// Found a base
+				//float baseAngle = std::atan2(base.y(), base.x()) / PI * 180;
 
-				// if (std::abs(diffX) + std::abs(diffY) <= MAX_BASE_PX_DIST)
-				if (centerError <= MAX_BASE_DIFF)
-				{ // Found a base
-					float baseAngle = std::atan2(base.y(), base.x()) / PI * 180;
+				// Search for parallel header
+				for (int e = 0; e < points2D.size(); e++)
+				{
+					if (e == c || e == a || e == b) continue;
 
-					// Find closest blob as heading
+					// Check size difference
+					float sizeMinE = std::min(sizeMinB, pointSizes[e]);
+					float sizeMaxE = std::max(sizeMaxB, pointSizes[e]);
+					if (sizeMinE * MAX_SIZE_DIFF < sizeMaxE) continue;
+
+					for (int f = e+1; f < points2D.size(); f++)
+					{
+						if (f == c || f == a || f == b) continue;
+
+						// Check size difference
+						float sizeMinF = std::min(sizeMinE, pointSizes[f]);
+						float sizeMaxF = std::max(sizeMaxE, pointSizes[f]);
+						if (sizeMinF * MAX_SIZE_DIFF < sizeMaxF) continue;
+
+						// Get point positions
+						Eigen::Vector2f ptE = points2D[e];
+						Eigen::Vector2f ptF = points2D[f];
+
+						// Get head parameters
+						Eigen::Vector2f head = ptE - ptF;
+						float headLen = head.norm();
+
+						// Check if head length is approximately half the size of the base
+						float headLenError = headLen * 2 / baseLen;
+						if (baseCenterError > MAX_LENGTH_DIFF) continue;
+
+						// Check if head is aligned with base
+						float parallelsAngleDiff = std::acos(std::abs(base.normalized().dot(head.normalized())));
+						if (parallelsAngleDiff > MAX_ANGLE_DIFF) continue;
+
+						// Found head, now find center
+						Eigen::Vector2f headCenter = (ptE+ptF) / 2;
+						Eigen::Vector2f centerPos = (headCenter + ptC) / 2;
+						Eigen::Vector2f vertical = headCenter - ptC;
+						float verticalLength = vertical.norm();
+						
+						for (int d = 0; d < points2D.size(); d++)
+						{
+							if (d == c || d == a || d == b || d == e || d == f) continue;
+
+							// Check size difference
+							float sizeMinD = std::min(sizeMinF, pointSizes[d]);
+							float sizeMaxD = std::max(sizeMaxF, pointSizes[d]);
+							if (sizeMinD * MAX_SIZE_DIFF < sizeMaxD) continue;
+
+							// Check if point is close to center
+							Eigen::Vector2f ptD = points2D[d];
+							float centerDiff = (ptD-centerPos).norm();
+							float centerError = centerDiff / verticalLength * 2;
+							if (centerError > MAX_LENGTH_DIFF) continue;
+
+							// Now order base and head points correctly
+							int aR = a, bR = b, eR = e, fR = f;
+							if (vertical.x() * base.y() - vertical.y()*base.x() < 0)
+							{ // Wrong side, flip base
+								aR = b;
+								bR = a;
+
+								// Check if head needs to be flipped, too
+								if (head.dot(base) > 0)
+								{
+									eR = f;
+									fR = e;
+								}
+							}
+							else
+							{ // Base is correctly oriented
+								// Check if head needs to be flipped
+								if (head.dot(base) < 0)
+								{
+									eR = f;
+									fR = e;
+								}
+							}
+
+							// Register marker candidate with all error terms
+							markerCandidates.push_back({
+								0, { c, aR, bR, d, eR, fR }, 
+								baseCenterError + centerError + headLenError + parallelsAngleDiff
+							});
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Sort marker candidates by accuracy
+	std::sort(markerCandidates.begin(), markerCandidates.end(), [](MarkerCandidate m1, MarkerCandidate m2) {
+		return m1.error < m2.error;
+	});
+
+	// Find best marker candidates and associate them
+	markerTag.reset();
+	markers2D.reserve(markers2D.size() + markerCandidates.size());
+	for (int m = 0; m < markerCandidates.size(); m++)
+	{
+		MarkerCandidate *mc = &markerCandidates[m];
+		
+		// Make sure all points of the candidates are unoccupied
+		bool occupied = false;
+		for (int i = 0; i < mc->points.size(); i++)
+			if (occupied = markerTag[mc->points[i]]) break;
+		if (occupied) continue;
+
+		// Set blobs as occupied
+		for (int i = 0; i < mc->points.size(); i++)
+			markerTag.set(mc->points[i]);
+
+		// Register marker
+		markers2D.push_back(Marker2D(mc->id, mc->points.size()));
+		Marker2D *marker = &markers2D[markers2D.size()-1];
+		for (int i = 0; i < mc->points.size(); i++)
+			marker->points[i] = points2D[mc->points[i]];
+
+#ifdef MARKER_DEBUG
+		std::cout << "Chose marker with error " << mc->error << "!" << std::endl;
+#endif
+	}
+
+	// Find blobs not part of any marker
+	if (points2D.size() > markers2D.size()*4)
+	{ // There are blobs not part of any marker
+		for (int b = 0; b < points2D.size(); b++)
+		{
+			if (!markerTag.test(b))
+			{ // Blob is not part of any marker
+				freePoints2D.push_back(b);
+			}
+		}
+	}
+}
+
+
+
+/*
+
+// Find closest blob as heading
 					uint_fast8_t h = -1;
 					float headLen = (float)1000000.0f;
 					for (int i = 0; i < points2D.size(); i++)
@@ -146,64 +286,18 @@ void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const st
 						// Register marker
 						// TODO: order a,b depending on which side h is using innerAngle
 						markerCandidates.push_back({
-							c, a, b, (uint8_t)h, centerError
+							c, a, b, (uint8_t)h, baseCenterError
 						});
 #ifdef MARKER_DEBUG
-						std::cout << "Registered marker with base angle " << baseAngle << ", length " << baseLen << " and error " << centerError << " head rel angle " << innerAngle << " and length " << headLen << "!" << std::endl;
+						std::cout << "Registered marker with base angle " << baseAngle << ", length " << baseLen << " and error " << baseCenterError << " head rel angle " << innerAngle << " and length " << headLen << "!" << std::endl;
 #endif
 						goto foundMarker;
 					}
-				}
-			}
 
-			foundMarker: continue;
-		}
-	}
 
-	// Sort marker candidates by accuracy
-	std::sort(markerCandidates.begin(), markerCandidates.end(), [](MarkerCandidate m1, MarkerCandidate m2) {
-		return m1.error < m2.error;
-	});
+*/
 
-	// Find best marker candidates and associate them
-	markerTag.reset();
-	markers2D.reserve(markers2D.size() + markerCandidates.size());
-	for (int m = 0; m < markerCandidates.size(); m++)
-	{
-		MarkerCandidate *mc = &markerCandidates[m];
-		if (markerTag[mc->c] || markerTag[mc->a] || markerTag[mc->b]) continue;
-
-		// Set blobs as used
-		markerTag.set(mc->a);
-		markerTag.set(mc->b);
-		markerTag.set(mc->c);
-		markerTag.set(mc->h);
-
-		markers2D.push_back(Marker({
-			points2D[mc->c],
-			points2D[mc->a],
-			points2D[mc->b],
-			points2D[mc->h],
-		}));
-
-#ifdef MARKER_DEBUG
-		std::cout << "Chose marker with error " << mc->error << "!" << std::endl;
-#endif
-	}
-
-	// Find blobs not part of any marker
-	if (points2D.size() > markers2D.size()*4)
-	{ // There are blobs not part of any marker
-		for (int b = 0; b < points2D.size(); b++)
-		{
-			if (!markerTag.test(b))
-			{ // Blob is not part of any marker
-				freePoints2D.push_back(b);
-			}
-		}
-	}
-}
-
+#ifdef USE_OPENCV
 /**
  * Interprets OpenCV position and rotation in camera spaces and transforms it into correct scene transformations
  */
@@ -231,17 +325,23 @@ Eigen::Isometry3f interpretCVSpace(const cv::Matx31d &cvPos, const cv::Matx31d &
 
 	return pose;
 }
+#endif
 
 /**
  * Infer the pose of a marker in camera space given its image points in pixel space and the intrinsically calibrated camera
  */
-Eigen::Isometry3f inferMarkerPose(const Camera &camera, const Marker &marker2D)
+Eigen::Isometry3f inferMarkerPose(const Camera &camera, const Marker2D &marker2D, const DefMarker &markerTemplate2D)
 {
-#ifdef USE_CV
+#ifdef USE_OPENCV
+	// Create CV 3D array of marker template points
+	std::vector<cv::Point3f> cv_pointsTemplate3D;
+	for (int i = 0; i < markerTemplate2D.points.size(); i++)
+		cv_pointsTemplate3D.push_back(cv::Point3f(markerTemplate2D.points[i].pos.x(), markerTemplate2D.points[i].pos.y(), markerTemplate2D.points[i].pos.z()));
+
 	// Create CV 2D array of marker points
 	std::vector<cv::Point2f> cv_points2D;
-	for (int i = 0; i < marker2D.pts.size(); i++)
-		cv_points2D.push_back(cv::Point2f(marker2D.pts[i].x(), marker2D.pts[i].y()));
+	for (int i = 0; i < marker2D.points.size(); i++)
+		cv_points2D.push_back(cv::Point2f(marker2D.points[i].x(), marker2D.points[i].y()));
 
 	// Compose camera matrix
 	float w = (float)camera.width, h = (float)camera.height;
@@ -262,40 +362,30 @@ Eigen::Isometry3f inferMarkerPose(const Camera &camera, const Marker &marker2D)
 	// use solvePnP to recreate rotation and translation
 	cv::Matx31d cv_rotation;
 	cv::Matx31d cv_translation;
-	cv::solvePnP(cv_marker3DTemplate, cv_points2D, cv_camMat, cv::noArray(), cv_rotation, cv_translation, false, cv::SOLVEPNP_ITERATIVE);
+	cv::solvePnP(cv_pointsTemplate3D, cv_points2D, cv_camMat, cv::noArray(), cv_rotation, cv_translation, false, cv::SOLVEPNP_ITERATIVE);
 
 	// Convert from OpenCV to Blender/OpenGL space
 	return interpretCVSpace(cv_translation, cv_rotation);
+#else
+	return Eigen::Isometry3f::Identity();
 #endif
 }
 
 /**
  * Calculate mean squared error in image space of detected pose
  */
-float calculateMSE(const Eigen::Isometry3f &pose3D, const Camera &camera, const Marker &marker2D)
+float calculateMSE(const Eigen::Isometry3f &pose3D, const Camera &camera, const Marker2D &marker2D, const DefMarker &markerTemplate2D)
 {
 	Eigen::Projective3f p = createProjectionMatrix(camera.fovH, camera.fovV);
 	float mse = 0.0f;
-	for (int i = 0; i < calibMarker3D.pts.size(); i++)
+	for (int i = 0; i < markerTemplate2D.points.size(); i++)
 	{
-		Eigen::Vector2f pt = projectPoint(p, pose3D * calibMarker3D.pts[i].pos).head<2>();
+		Eigen::Vector2f pt = projectPoint(p, pose3D * markerTemplate2D.points[i].pos).head<2>();
 		pt = Eigen::Vector2f((pt.x()+1)/2*camera.width, (pt.y()+1)/2*camera.height);
-		Eigen::Vector2f diffPx = marker2D.pts[i] - pt; // Convert difference to pixels
+		Eigen::Vector2f diffPx = marker2D.points[i] - pt; // Convert difference to pixels
 		mse += diffPx.squaredNorm();
 	}
-	return mse / calibMarker3D.pts.size();
-}
-
-/**
- * Gets the currently expected blob count of the current target
- */
-int getExpectedBlobCount()
-{
-#ifdef USE_CV
-	return cv_marker3DTemplate.size() < 4? 4 : cv_marker3DTemplate.size();
-#else
-	return 0;
-#endif
+	return mse / markerTemplate2D.points.size();
 }
 
 /**
@@ -478,7 +568,7 @@ void calculateCameraTransforms(std::vector<TransformSample*> &origins, std::vect
 /**
  * Adds markers that add value to the calibration to the calibration selection and adjusts selection parameters
  */
-bool selectMarkersForCalibration(const Camera &camera, const std::vector<Marker> &markers, std::vector<Marker> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, float radialGranularity, float radialTarget, std::vector<std::vector<uint16_t>> &gridBuckets, int gridSize, int gridTarget, float *threshold, int m)
+bool selectMarkersForCalibration(const Camera &camera, const DefMarker &markerTemplate2D, const std::vector<Marker2D> &markers, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, float radialGranularity, float radialTarget, std::vector<std::vector<uint16_t>> &gridBuckets, int gridSize, int gridTarget, float *threshold, int m)
 {
 	// granularity: Range of radial density check, specifies granularity at which markers are required and checked
 	// target: Local target density in the radial lookup table
@@ -506,17 +596,20 @@ bool selectMarkersForCalibration(const Camera &camera, const std::vector<Marker>
 	bool addedMarker = false;
 	for (int p = 0; p < markers.size(); p++)
 	{
-		const Marker *marker = &markers[p];
+		const Marker2D *marker = &markers[p];
+
+		// Only select markers of the desired type
+		if (marker->id != markerTemplate2D.id || marker->points.size() != markerTemplate2D.points.size()) continue;
 
 		// Determine value of adding marker to selection
 		float radialValue = 0, gridValue = 0;
-		for (int i = 0; i < marker->pts.size(); i++)
+		for (int i = 0; i < marker->points.size(); i++)
 		{
-			float r = Eigen::Vector2f((marker->pts[i].x()-w/2)/w*2, (marker->pts[i].y()-h/2)/w*2).norm();
+			float r = Eigen::Vector2f((marker->points[i].x()-w/2)/w*2, (marker->points[i].y()-h/2)/w*2).norm();
 			float density = calcMarkerDensity(r, radialGranularity);
-			float scale = 10.0f/marker->pts.size();
+			float scale = 10.0f/marker->points.size();
 			radialValue += std::max(0.0f, radialTarget-density) * scale;
-			gridValue += std::max(0.0f, (float)gridTarget-getBucket(marker->pts[i])->size()) * scale;
+			gridValue += std::max(0.0f, (float)gridTarget-getBucket(marker->points[i])->size()) * scale;
 		}
 
 		// Determine if marker should be added
@@ -530,13 +623,13 @@ bool selectMarkersForCalibration(const Camera &camera, const std::vector<Marker>
 		int index = calibrationSelection.size();
 		calibrationSelection.push_back(*marker);
 		float rmin = 2, rmax = 0;
-		for (int i = 0; i < marker->pts.size(); i++)
+		for (int i = 0; i < marker->points.size(); i++)
 		{
-			float r = Eigen::Vector2f((marker->pts[i].x()-w/2)/w*2, (marker->pts[i].y()-h/2)/w*2).norm();
+			float r = Eigen::Vector2f((marker->points[i].x()-w/2)/w*2, (marker->points[i].y()-h/2)/w*2).norm();
 			rmin = std::min(rmin, r);
 			rmax = std::max(rmax, r);
 			radialLookup.insert({ r, (uint16_t)index });
-			getBucket(marker->pts[i])->push_back((uint16_t)index);
+			getBucket(marker->points[i])->push_back((uint16_t)index);
 		}
 		wxLogMessage("Cam %d calibration: Marker (%.4f-%.4f); Value radial: %.4f, grid: %.4f", m, rmin, rmax, radialValue, gridValue);
 		addedMarker = true;
@@ -583,25 +676,24 @@ bool selectMarkersForCalibration(const Camera &camera, const std::vector<Marker>
 }
 
 /**
- * Calibrate using a range of detected markers
+ * Calibrate using a range of detected markers (each detected marker has to have the same point count as the template and the same ID)
  */
-float calculateIntrinsicCalibration(Camera &camera, const std::vector<Marker> &markers, std::vector<double> &errors)
+float calculateIntrinsicCalibration(Camera &camera, const std::vector<Marker2D> &markers, const DefMarker &markerTemplate2D, std::vector<double> &errors)
 {
-#ifdef USE_CV
+#ifdef USE_OPENCV
 	// Create CV 2D array of marker points
-	int ptCnt = cv_marker3DTemplate.size();
+	int ptCnt = markerTemplate2D.points.size();
 	int mkCnt = markers.size();
 	std::vector<std::vector<cv::Point2f>> cv_calibPoints2D(mkCnt);
 	std::vector<std::vector<cv::Point3f>> cv_markerPoints3D(mkCnt);
 	for (int m = 0; m < markers.size(); m++)
 	{
-		if (markers[m].pts.size() != ptCnt) continue;
 		cv_calibPoints2D[m].reserve(ptCnt);
 		cv_markerPoints3D[m].reserve(ptCnt);
 		for (int i = 0; i < ptCnt; i++)
 		{
-			cv_calibPoints2D[m].push_back(cv::Point2f(markers[m].pts[i].x(), markers[m].pts[i].y()));
-			cv_markerPoints3D[m].push_back(cv_marker3DTemplate[i]);
+			cv_calibPoints2D[m].push_back(cv::Point2f(markers[m].points[i].x(), markers[m].points[i].y()));
+			cv_markerPoints3D[m].push_back(cv::Point3f(markerTemplate2D.points[i].pos.x(), markerTemplate2D.points[i].pos.y(), markerTemplate2D.points[i].pos.z()));
 		}
 	}
 
@@ -678,7 +770,7 @@ float calculateIntrinsicCalibration(Camera &camera, const std::vector<Marker> &m
 /**
  * Takes the calibration selection and filters them using the errors from the last calibration round
  */
-void filterMarkersForCalibration(const Camera &camera, const std::vector<double> &errors, std::vector<Marker> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, std::vector<std::vector<uint16_t>> &gridBuckets, int m)
+void filterMarkersForCalibration(const Camera &camera, const std::vector<double> &errors, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, std::vector<std::vector<uint16_t>> &gridBuckets, int m)
 {
 	// Find the x worst fitting markers
 	int cnt = calibrationSelection.size();

@@ -8,6 +8,7 @@
 #define DEF_TESTING
 
 #include "eigenutil.hpp"
+#include "util.hpp" // DefMarker
 #include "tracking.hpp"
 #include "calibration.hpp"
 
@@ -21,18 +22,13 @@
 
 /* Structures */
 
-typedef struct
+struct Color
 {
 	float r,g,b;
-} Color;
+};
 
 
 /* Functions */
-
-/**
- * Initialize resources for testing
- */
-void initTesting();
 
 /**
  * Initialize resources for visualization
@@ -42,17 +38,7 @@ void initVisualization();
 /**
  * Cleanup of resources
  */
-void cleanTesting();
-
-/**
- * Sets the specified marker data as the current calibration target
- */
-void setActiveCalibrationMarker(const DefMarker &markerData);
-
-/**
- * Sets the specified marker data as the current tracking target
- */
-void setActiveTrackingMarker(const DefMarker &markerData);
+void cleanVisualization();
 
 /**
  * Projects marker into image plane provided translation in centimeters and rotation, as well as a camera position
@@ -62,12 +48,12 @@ void createMarkerProjection(std::vector<Eigen::Vector2f> &points2D, std::vector<
 /**
  * Transforms marker points based on translation and rotation
  */
-void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const Eigen::Isometry3f &transform);
+void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const MarkerTemplate3D &marker3D, const Eigen::Isometry3f &transform);
 
 /**
  * Analyze possibility of tracking algorithm to extract the pose based on ground truth data
  */
-void analyzeTrackingAlgorithm(std::vector<int> &visibleCount, std::bitset<MAX_MARKER_POINTS> &triangulationMask, std::vector<TriangulatedPoint> &points3D, Eigen::Isometry3f gt);
+void analyzeTrackingAlgorithm(const std::vector<int> &visibleCount, const std::bitset<MAX_MARKER_POINTS> &triangulationMask, const std::vector<TriangulatedPoint> &points3D, const MarkerTemplate3D marker3D, Eigen::Isometry3f gt);
 
 /**
  * Visualize 2D points in pixel space
@@ -87,7 +73,7 @@ void visualizePoses(const Camera &camera, const std::vector<Eigen::Isometry3f> &
 /**
  * Visualize calibration markers in pixel space
  */
-void visualizeMarkers(const Camera &camera, const std::vector<Marker> &markers2D);
+void visualizeMarkers(const Camera &camera, const std::vector<Marker2D> &markers2D);
 
 /**
  * Visualize 3D Rays in world space

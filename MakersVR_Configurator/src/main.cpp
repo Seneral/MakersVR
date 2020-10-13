@@ -4,12 +4,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "main.h"
+#include "GL/glew.h"
+
+#include "main.hpp"
+
+#include "testing.hpp"
 
 #include <chrono>
-#include <atomic>
-#include <stdlib.h>
-#include <algorithm>
+#include <bitset>
 
 #define MEASURE_RECEIVE_RATE
 //#define DEBUG_BLOBS_IN
@@ -20,10 +22,6 @@ static std::chrono::time_point<std::chrono::steady_clock> g_lastReceiveTime;
 static StatValue receiveRate;
 static std::atomic<long long> g_receiveCount = 0;
 #endif
-
-const int testFrameRate = 20;
-const int camWidth = 1640;
-const int camHeight = 1232;
 
 enum CustomEvents
 {
@@ -63,30 +61,39 @@ bool ConfiguratorApp::OnInit()
 {
 	m_state = STATE_Idle;
 
-	// Init pose inference
-	initTesting();
-	initCalibration();
-	initTracking();
-
 	// Read config
 	parseConfigFile("config/config.json", &m_config);
 
-	if (m_config.testing.calibrationMarkers.size() > 0)
-	{ // Set first as default
-		setActiveCalibrationMarker(m_config.testing.calibrationMarkers[0]);
+	// Get built-in calibration markers
+	getBuiltInMarkers(m_globalState.calibration.markerTemplates2D);
+
+	// Copy testing markers into database
+	int prevCalibCnt = m_globalState.calibration.markerTemplates2D.size();
+	m_globalState.calibration.markerTemplates2D.reserve(prevCalibCnt + m_config.testing.calibrationMarkers.size());
+	for (int i = 0; i < m_config.testing.calibrationMarkers.size(); i++)
+	{
+		m_globalState.calibration.markerTemplates2D.push_back(m_config.testing.calibrationMarkers[i]);
+		m_globalState.calibration.markerTemplates2D[prevCalibCnt+i].id = prevCalibCnt+i;
 	}
-	else
-	{ // Set some default Marker
-		setActiveCalibrationMarker({ "Default 1-Point", { { Eigen::Vector3f( 0.0f, 0.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 360.0f } } });
+	if (m_globalState.calibration.markerTemplates2D.size() > 0) m_globalState.calibration.markerTemplate2D = &m_globalState.calibration.markerTemplates2D[0];
+
+	// Copy testing markers into database
+	int prevTrackCnt = m_globalState.tracking.markerTemplates3D.size();
+	m_globalState.tracking.markerTemplates3D.resize(prevTrackCnt + m_config.testing.trackingMarkers.size());
+	for (int i = 0; i < m_config.testing.trackingMarkers.size(); i++)
+	{
+		DefMarker *markerDef = &m_config.testing.trackingMarkers[i];
+		MarkerTemplate3D *marker = &m_globalState.tracking.markerTemplates3D[prevTrackCnt+i];
+		marker->label = markerDef->label;
+		marker->id = -i-1;
+		marker->points.reserve(markerDef->points.size());
+		for (int j = 0; j < markerDef->points.size(); j++)
+			marker->points.push_back(markerDef->points[j].pos);
+		generateLookupTables(marker);
 	}
-	if (m_config.testing.trackingMarkers.size() > 0)
-	{ // Set first as default
-		setActiveTrackingMarker(m_config.testing.trackingMarkers[0]);
-	}
-	else
-	{ // Set some default Marker
-		setActiveTrackingMarker({ "Default 1-Point", { { Eigen::Vector3f( 0.0f, 0.0f, 0.0f), Eigen::Vector3f(0.0f, 0.0f, 1.0f), 360.0f } } });
-	}
+	if (m_globalState.tracking.markerTemplates3D.size() > 0) m_globalState.tracking.markerTemplate3D = &m_globalState.tracking.markerTemplates3D[0];
+
+	// TODO: Copy calibrated tracking markers into database
 
 	// Open main frame
 	m_frame = new ConfiguratorFrame();
@@ -149,9 +156,8 @@ void ConfiguratorApp::Connect()
 			{
 				CameraState *cam = &m_globalState.cameras[i];
 				cam->camera = cameraCalibrations[i];
-				cam->camera.width = camWidth;
-				cam->camera.height = camHeight;
-				cam->camera.aspect = (float)camWidth/camHeight;
+				cam->camera.width = m_config.mode.cameraResolutionX;
+				cam->camera.height = m_config.mode.cameraResolutionY;
 				m_cameraFrames.push_back(new CameraFrame("MakersVR MarkerDetector View"));
 			}
 			// Enter phase
@@ -203,33 +209,31 @@ void ConfiguratorApp::StartTesting(enum ControlPhase phase)
 	m_globalState.tracking.sigmaError = m_config.tracking.sigmaError;
 	m_globalState.tracking.intersectError = m_config.tracking.intersectError;
 	// Add testing cameras
+	m_globalState.cameras.resize(m_config.testing.cameraDefinitions.size());
 	for (int i = 0; i < m_config.testing.cameraDefinitions.size(); i++)
 	{
 		DefCamera *def = &m_config.testing.cameraDefinitions[i];
-		CameraState cam = {};
+		CameraState *cam = &m_globalState.cameras[i];
 		// Ground truth testing camera
-		cam.testing.camera.width = camWidth;
-		cam.testing.camera.height = camHeight;
-		cam.testing.camera.aspect = (float)camWidth/camHeight;
-		cam.testing.camera.fovH = def->fovH; //2* std::atan(3.68f/3.04f/2) / PI * 180.0f;
-		cam.testing.camera.fovV = def->fovV; //2* std::atan(2.76f/3.04f/2) / PI * 180.0f;
-		memcpy(&cam.testing.camera.distortion, def->distortion, sizeof(cam.testing.camera.distortion));
+		cam->testing.camera.width = m_config.mode.cameraResolutionX;
+		cam->testing.camera.height = m_config.mode.cameraResolutionY;
+		cam->testing.camera.fovH = def->fovH;
+		cam->testing.camera.fovV = def->fovV;
+		memcpy(&cam->testing.camera.distortion, def->distortion, sizeof(cam->testing.camera.distortion));
 		//cam.testing.camera.distortion = { 0.132183f, -0.186451f, 0.001267f, 0.000618f, 0.000000f };
-		cam.testing.camera.transform = createModelMatrix(def->pos, def->rot);
+		cam->testing.camera.transform = createModelMatrix(def->pos, def->rot);
 		// Calibrated actual camera
 		if (cameraCalibrations.size() > i)
-			cam.camera = cameraCalibrations[i];
-		cam.camera.width = camWidth;
-		cam.camera.height = camHeight;
-		cam.camera.aspect = (float)camWidth/camHeight;
+			cam->camera = cameraCalibrations[i];
+		cam->camera.width = m_config.mode.cameraResolutionX;
+		cam->camera.height = m_config.mode.cameraResolutionY;
 		// Register and create frame
-		m_globalState.cameras.push_back(cam);
 		m_cameraFrames.push_back(new CameraFrame(def->label));
 
 		{
 			// Debug
-			Camera *tCam = &cam.testing.camera;
-			Camera *cCam = &cam.camera;
+			Camera *tCam = &cam->testing.camera;
+			Camera *cCam = &cam->camera;
 			wxLogMessage("Cam %d labeled %s", i, m_config.testing.cameraDefinitions[i].label);
 			wxLogMessage("Cam %d testing intrinsics: FoV (%f, %f), Distortions (%f, %f, %f, %f, %f)", i, tCam->fovH, tCam->fovV,
 				tCam->distortion.k1, tCam->distortion.k2, tCam->distortion.p1, tCam->distortion.p2, tCam->distortion.k3);
@@ -338,27 +342,26 @@ ConfiguratorFrame::ConfiguratorFrame()
 	menu->AppendSeparator();
 	menu->Append(wxID_EXIT);
 
-	// Fill calibration marker selection
-	for (int i = 0; i < wxGetApp().m_config.testing.calibrationMarkers.size(); i++)
+	TrackingState *state = &wxGetApp().m_globalState;
+
+	// Fill calibration marker selection (built-in + config)
+	for (int i = 0; i < state->calibration.markerTemplates2D.size(); i++)
 	{
-		DefMarker *calibMarker = &wxGetApp().m_config.testing.calibrationMarkers[i];
-		std::stringstream menuLabel;
-		menuLabel << "&" << calibMarker->label;
-		calibMarkerMenu->Append(ID_Marker+i, menuLabel.str(), "Select this calibration marker.");
+		DefMarker *calibMarker = &state->calibration.markerTemplates2D[i];
+		calibMarkerMenu->Append(ID_Marker+i, calibMarker->label, "Select this calibration marker.");
 		Bind(wxEVT_COMMAND_MENU_SELECTED, &ConfiguratorFrame::OnSelectMarker, this, ID_Marker+i);
-		wxLogMessage("Read Calibration Marker '%s' with %d points!", calibMarker->label, (int)calibMarker->pts.size());
+		wxLogMessage("Read Calibration Marker '%s' (%d) with %d points!", calibMarker->label, calibMarker->id, (int)calibMarker->points.size());
 	}
 
-	// Fill tracking marker selection
-	int idOffset = wxGetApp().m_config.testing.calibrationMarkers.size();
-	for (int i = 0; i < wxGetApp().m_config.testing.trackingMarkers.size(); i++)
+	// Fill tracking marker selection (only config, not calibrated markers)
+	int idOffset = state->calibration.markerTemplates2D.size();
+	for (int i = 0; i < state->tracking.markerTemplates3D.size(); i++)
 	{
-		DefMarker *trackMarker = &wxGetApp().m_config.testing.trackingMarkers[i];
-		std::stringstream menuLabel;
-		menuLabel << "&" << trackMarker->label;
-		trackMarkerMenu->Append(ID_Marker+idOffset+i, menuLabel.str(), "Select this tracking marker.");
+		MarkerTemplate3D *trackMarker = &state->tracking.markerTemplates3D[i];
+		if (trackMarker->id >= 0) continue; // Can't select calibrated markers, since there is not enough information (LED direction, fov) to simulate it
+		trackMarkerMenu->Append(ID_Marker+idOffset+i, trackMarker->label, "Select this tracking marker.");
 		Bind(wxEVT_COMMAND_MENU_SELECTED, &ConfiguratorFrame::OnSelectMarker, this, ID_Marker+idOffset+i);
-		wxLogMessage("Read Tracking Marker '%s' with %d points!", trackMarker->label, (int)trackMarker->pts.size());
+		wxLogMessage("Read Tracking Marker '%s' (%d) with %d points!", trackMarker->label, trackMarker->id, (int)trackMarker->points.size());
 	}
 
 	Show();
@@ -398,19 +401,18 @@ void ConfiguratorFrame::OnStopTesting(wxCommandEvent &event)
 }
 void ConfiguratorFrame::OnSelectMarker(wxCommandEvent &event)
 {
+	TrackingState *state = &wxGetApp().m_globalState;
 	int markerID = event.GetId()-ID_Marker;
-	int idOffset = wxGetApp().m_config.testing.calibrationMarkers.size();
+	int idOffset = state->calibration.markerTemplates2D.size();
 	if (markerID < idOffset)
 	{ // Dealing with calibration marker
-		DefMarker *marker = &wxGetApp().m_config.testing.calibrationMarkers.at(markerID);
-		wxLogMessage("Select calibration marker '%s' with %d points!", marker->label, (int)marker->pts.size());
-		setActiveCalibrationMarker(*marker);
+		state->calibration.markerTemplate2D = &state->calibration.markerTemplates2D[markerID];
+		wxLogMessage("Select calibration marker %s (%d) with %d points!", state->calibration.markerTemplate2D->label, state->calibration.markerTemplate2D->id, (int)state->calibration.markerTemplate2D->points.size());
 	}
 	else
 	{ // Dealing with tracking marker
-		DefMarker *marker = &wxGetApp().m_config.testing.trackingMarkers.at(markerID-idOffset);
-		wxLogMessage("Select tracking marker '%s' with %d points!", marker->label, (int)marker->pts.size());
-		setActiveTrackingMarker(*marker);
+		state->tracking.markerTemplate3D = &state->tracking.markerTemplates3D[markerID-idOffset];
+		wxLogMessage("Select tracking marker %s (%d) with %d points!", state->tracking.markerTemplate3D->label, state->tracking.markerTemplate3D->id, (int)state->tracking.markerTemplate3D->points.size());
 	}
 }
 
@@ -440,10 +442,7 @@ static bool assureGLInit()
 }
 static void assureGLClean()
 {
-	// Clean pose inference
-	cleanTesting();
-	cleanCalibration();
-	cleanTracking();
+	cleanVisualization();
 }
 
 // ----------------------------------------------------------------------------
@@ -453,7 +452,7 @@ static void assureGLClean()
 CameraFrame::CameraFrame(std::string name = "MakersVR Camera View")
 	: wxFrame(NULL, wxID_ANY, name)
 {
-	SetClientSize(camWidth/2, camHeight/2);
+	SetClientSize(800, 600);
 	Bind(wxEVT_CLOSE_WINDOW, &CameraFrame::OnClose, this);
 	m_canvas = new wxGLCanvas(this, wxID_ANY, NULL, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
 	m_canvas->Bind(wxEVT_PAINT, &CameraFrame::OnPaint, this);
@@ -495,6 +494,7 @@ void CameraFrame::Render()
 	{
 		visualizeDistortion(cam->camera, cam->testing.camera);
 		visualizePoints2D(cam->camera, cam->points2D);
+		visualizeMarkers(cam->camera, cam->intrinsic.markers);
 	}
 	else if (state->phase == PHASE_Calibration_Extrinsic || state->phase == PHASE_Calibration_Room)
 	{
@@ -663,7 +663,7 @@ static void ThreadSendTestData()
 
 			auto genPoseInCamView = [](Camera *camera, float min, float max)
 			{ // Generate pose facing camera withing range min,max
-				const float fov = 0.95f, edge = 1.5f, facing = 30, frontal = 1.8f;
+				const float fov = 1.0f, edge = 1.5f, facing = 30, frontal = 1.8f;
 				auto genExp = [](float pow){
 					float rnd = rand()%10000 / 5000.0f - 1;
 					float exp = std::powf(std::abs(rnd), pow);
@@ -676,7 +676,7 @@ static void ThreadSendTestData()
 				tgtR = Eigen::Vector3f(
 					genExp(frontal) * facing,
 					genExp(frontal) * facing,
-					genExp(frontal) * facing);
+					(rand()%10000 / 5000.0f - 1) * 180);
 				return camera->transform * createModelMatrix(tgtT, getRotationZYX(tgtR / 180.0f * PI));
 			};
 			auto genPoseInCamViews = [&genPoseInCamView](Camera *cameraA, Camera *cameraB, float min, float max)
@@ -695,7 +695,7 @@ static void ThreadSendTestData()
 			};
 			if (state->phase == PHASE_Calibration_Intrinsic || state->phase == PHASE_Calibration_Extrinsic)
 			{
-				if (state->phase == PHASE_Calibration_Intrinsic)
+				if (state->phase == PHASE_Calibration_Intrinsic || (state->phase == PHASE_Calibration_Extrinsic && state->calibration.relations.size() <= focusOnCamera))
 				{ // Marker in front of cameras
 					Camera *camera = &state->cameras[focusOnCamera].testing.camera;
 					// Generate initial pose
@@ -722,7 +722,7 @@ static void ThreadSendTestData()
 				Eigen::AngleAxisf rDiffAx = Eigen::AngleAxisf(rDiff);
 				// Lerp GT pose to target
 				const float cmPerSec = 50.0f;
-				float lerp = std::min(1.0f, cmPerSec/testFrameRate / tDiff.norm());
+				float lerp = std::min(1.0f, cmPerSec/host->m_config.mode.cameraFramerate / tDiff.norm());
 				state->testing.GT.translation() += tDiff * lerp;
 				rDiffAx.angle() *= lerp;
 				state->testing.GT.linear() = rDiffAx * state->testing.GT.linear();
@@ -762,10 +762,11 @@ static void ThreadSendTestData()
 					// Project marker into camera view (simulated test data)
 					camState->points2D.clear();
 					camState->pointSizes.clear();
-					createMarkerProjection(camState->points2D, camState->pointSizes, camState->testing.markerPtsVisible, calibMarker3D, camState->testing.camera, state->testing.GT, state->testing.blobPxStdDev);
+					createMarkerProjection(camState->points2D, camState->pointSizes, camState->testing.markerPtsVisible, *state->calibration.markerTemplate2D, camState->testing.camera, state->testing.GT, state->testing.blobPxStdDev);
 					
-					// Assume perfect order of image points
-					//std::random_shuffle(camState->points2D.begin(), camState->points2D.end());
+					// Shuffle only if marker is built-in (so a detection algorithm exists)
+					if (isMarkerBuiltIn(state->calibration.markerTemplate2D->id))
+						std::random_shuffle(camState->points2D.begin(), camState->points2D.end());
 				}
 
 				// ----- Single camera pose estimation -----
@@ -795,8 +796,11 @@ static void ThreadSendTestData()
 
 				// For testing of triangulation only
 				std::vector<int> visibleCount;
-				visibleCount.resize(marker3D.markerTemplate.pts.size());
-				
+				visibleCount.resize(state->tracking.markerTemplate3D->points.size());
+
+				if (state->tracking.markerTemplate3D->id >= 0) break; // Can't simulate, don't have DefMarker for it
+				DefMarker *markerDef = &host->m_config.testing.trackingMarkers[-state->tracking.markerTemplate3D->id-1];
+
 				for (int m = 0; m < state->cameras.size(); m++)
 				{
 					CameraState *camState = &state->cameras[m];
@@ -804,7 +808,7 @@ static void ThreadSendTestData()
 					// Project marker into camera view (simulated test data)
 					camState->points2D.clear();
 					camState->pointSizes.clear();
-					createMarkerProjection(camState->points2D, camState->pointSizes, camState->testing.markerPtsVisible, marker3D.markerTemplate, camState->testing.camera, state->testing.GT, state->testing.blobPxStdDev);
+					createMarkerProjection(camState->points2D, camState->pointSizes, camState->testing.markerPtsVisible, *markerDef, camState->testing.camera, state->testing.GT, state->testing.blobPxStdDev);
 
 					// For testing only, accumulate by how many cameras a point is seen to determine if it is useful for triangulation
 					for (int i = 0; i < visibleCount.size(); i++)
@@ -833,7 +837,7 @@ static void ThreadSendTestData()
 				for (int i = 0; i < visibleCount.size(); i++)
 					triangulationMask.set(i, visibleCount[i] >= 2);
 				state->testing.triangulatedPoints3D.clear();
-				transformMarkerPoints(state->testing.triangulatedPoints3D, triangulationMask, state->testing.GT);
+				transformMarkerPoints(state->testing.triangulatedPoints3D, triangulationMask, *state->tracking.markerTemplate3D, state->testing.GT);
 
 				// Handle detected pose
 				bool wrongPose = false;
@@ -860,7 +864,7 @@ static void ThreadSendTestData()
 				static int times = 0;
 				if (wrongPose && times++ < 10)
 				{ // Debug circumstances using ground truth in case pose is wrong (or missing)
-					analyzeTrackingAlgorithm(visibleCount, triangulationMask, state->tracking.points3D, state->testing.GT);
+					analyzeTrackingAlgorithm(visibleCount, triangulationMask, state->tracking.points3D, *state->tracking.markerTemplate3D, state->testing.GT);
 					// Interrupt a few times to allow for debugging
 					if (times < 5)
 						wxMessageOutput::Get()->Printf (wxT("Failed to detect pose!"));
@@ -878,7 +882,7 @@ static void ThreadSendTestData()
 					host->m_cameraFrames[m]->Repaint();
 			}
 		}
-		std::this_thread::sleep_for(std::chrono::milliseconds((1000/testFrameRate)-1));
+		std::this_thread::sleep_for(std::chrono::milliseconds((1000/host->m_config.mode.cameraFramerate)-1));
 	}
 }
 
@@ -943,6 +947,8 @@ static void onIsochronousIN(uint8_t *data, int length)
 	{
 		CameraState *camState = &wxGetApp().m_globalState.cameras[0];
 
+		float aspect = (float)wxGetApp().m_config.mode.cameraResolutionY/wxGetApp().m_config.mode.cameraResolutionX;
+
 		// Update list of blobs
 		camState->points2D.clear();
 		camState->pointSizes.clear();
@@ -953,7 +959,7 @@ static void onIsochronousIN(uint8_t *data, int length)
 			int pos = headerSize+i*6;
 			uint16_t *blobData = (uint16_t*)&data[pos];
 			float x = (float)((double)blobData[0] / 65536.0);
-			float y = (float)((double)blobData[1] / 65536.0 * camHeight/camWidth);
+			float y = (float)((double)blobData[1] / 65536.0 * aspect);
 			float s = (float)data[pos+4]/2.0f;
 			camState->points2D.push_back(Eigen::Vector2f(x,y));
 			camState->pointSizes.push_back(s);

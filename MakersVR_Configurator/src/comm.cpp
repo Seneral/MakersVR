@@ -4,8 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "comm.h"
-#include "util.h"
+#include "comm.hpp"
+#include "util.hpp"
 
 #ifdef NO_WX
 #define PRINT printf

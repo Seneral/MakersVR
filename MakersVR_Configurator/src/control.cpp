@@ -8,7 +8,7 @@
 
 #include "wxbase.hpp" // wxLog*
 
-static void CalibrationThreadFunction(CameraState *cam);
+static void CalibrationThreadFunction(TrackingState *state, CameraState *cam);
 
 static void InitCalibrationIntrinsic(TrackingState *state)
 {
@@ -244,12 +244,12 @@ static void UpdateTrackedCalibrationMarker(TrackingState *state)
 		cam->extrinsic.markers.clear();
 		cam->extrinsic.freeBlobs.clear();
 
-		if (true) // TODO: Differentiate between testing markers (loaded from config) and built-in marker
-		{ // Skip detection for testing markers (there's no generic detection algorithm for them)
-			if (cam->undistorted2D.size() >= getExpectedBlobCount())
-			{ // Assume all points visible belong to singular marker
-				cam->extrinsic.markers.push_back(Marker(cam->undistorted2D.size()));
-				std::copy(cam->undistorted2D.begin(), cam->undistorted2D.end(), cam->extrinsic.markers[0].pts.begin());
+		if (!isMarkerBuiltIn(state->calibration.markerTemplate2D->id))
+		{ // Skip detection for testing markers (there's no detection algorithm for them)
+			if (cam->undistorted2D.size() >= state->calibration.markerTemplate2D->points.size())
+			{ // Assume all points visible belong to singular marker and are kept ordered (not shuffled)
+				cam->extrinsic.markers.push_back(Marker2D(state->calibration.markerTemplate2D->id, cam->undistorted2D.size()));
+				std::copy(cam->undistorted2D.begin(), cam->undistorted2D.end(), cam->extrinsic.markers[0].points.begin());
 			}
 		}
 		else // Detect built-in markers
@@ -260,8 +260,8 @@ static void UpdateTrackedCalibrationMarker(TrackingState *state)
 		// Infer pose of detected markers
 		for (int i = 0; i < cam->extrinsic.markers.size(); i++)
 		{
-			Eigen::Isometry3f pose = inferMarkerPose(cam->camera, cam->extrinsic.markers[i]);
-			float MSE = calculateMSE(pose, cam->camera, cam->extrinsic.markers[i]);
+			Eigen::Isometry3f pose = inferMarkerPose(cam->camera, cam->extrinsic.markers[i], *state->calibration.markerTemplate2D);
+			float MSE = calculateMSE(pose, cam->camera, cam->extrinsic.markers[i], *state->calibration.markerTemplate2D);
 			cam->extrinsic.poses.push_back(pose);
 			cam->extrinsic.posesMSE.push_back(MSE);
 		}
@@ -291,7 +291,7 @@ static void UpdateTrackedCalibrationMarker(TrackingState *state)
 				{ // Flip rotation, because it conforms significantly more with expected rotation
 					Eigen::Isometry3f flippedPose = cam->extrinsic.poses[p];
 					flippedPose.linear() = flippedRot;
-					float flippedMSE = calculateMSE(flippedPose, cam->camera, cam->extrinsic.markers[p]);
+					float flippedMSE = calculateMSE(flippedPose, cam->camera, cam->extrinsic.markers[p], *state->calibration.markerTemplate2D);
 					cam->extrinsic.poses[p] = flippedPose;
 					cam->extrinsic.posesMSE[p] = flippedMSE*10;
 //					wxLogMessage("Cam %d, Pose %d (%d):  Flipped, new MSE: %f! Diffs exp: %f, act: %f, flp: %f", m, p, l, flippedMSE, expectedAngleDiff/PI*180, curAngleDiff/PI*180, flippedAngleDiff/PI*180);
@@ -389,11 +389,11 @@ static void UpdateRoomOriginCandidates(TrackingState *state)
 /**
  * Executes calibration and then exits
  */
-static void CalibrationThreadFunction(CameraState *cam)
+static void CalibrationThreadFunction(TrackingState *state, CameraState *cam)
 {
 	cam->intrinsic.calibrationRunning = true;
 	cam->intrinsic.calibrationFinished = false;
-	calculateIntrinsicCalibration(cam->camera, cam->intrinsic.calibrationSelection, cam->intrinsic.calibrationMarkerErrors);
+	calculateIntrinsicCalibration(cam->camera, cam->intrinsic.calibrationSelection, *state->calibration.markerTemplate2D, cam->intrinsic.calibrationMarkerErrors);
 	cam->intrinsic.calibrationFinished = true;
 }
 
@@ -406,12 +406,12 @@ static void UpdateIntrinsicCalibration(TrackingState *state)
 		cam->intrinsic.markers.clear();
 		cam->intrinsic.freeBlobs.clear();
 
-		if (true) // TODO: Differentiate between testing markers (loaded from config) and built-in marker
-		{ // Skip detection for testing markers (there's no generic detection algorithm for them)
-			if (cam->points2D.size() >= getExpectedBlobCount())
-			{ // Assume all points visible belong to singular marker
-				cam->intrinsic.markers.push_back(Marker(cam->points2D.size()));
-				std::copy(cam->points2D.begin(), cam->points2D.end(), cam->intrinsic.markers[0].pts.begin());
+		if (!isMarkerBuiltIn(state->calibration.markerTemplate2D->id))
+		{ // Skip detection for testing markers (there's no detection algorithm for them)
+			if (cam->points2D.size() >= state->calibration.markerTemplate2D->points.size())
+			{ // Assume all points visible belong to singular marker and are kept ordered (not shuffled)
+				cam->intrinsic.markers.push_back(Marker2D(state->calibration.markerTemplate2D->id, cam->points2D.size()));
+				std::copy(cam->points2D.begin(), cam->points2D.end(), cam->intrinsic.markers[0].points.begin());
 			}
 		}
 		else // Detect built-in markers
@@ -429,14 +429,14 @@ static void UpdateIntrinsicCalibration(TrackingState *state)
 		{ // No updates while calibration is running
 
 			// Select markers for next calibration round
-			bool calibReady = selectMarkersForCalibration(cam->camera, cam->intrinsic.markers, cam->intrinsic.calibrationSelection,
+			bool calibReady = selectMarkersForCalibration(cam->camera, *state->calibration.markerTemplate2D, cam->intrinsic.markers, cam->intrinsic.calibrationSelection,
 				cam->intrinsic.markerRadialLookup, cam->intrinsic.markerDensityGranularity, cam->intrinsic.markerDensityTarget,
 				cam->intrinsic.markerGridBuckets, cam->intrinsic.markerGridSize, cam->intrinsic.markerGridCountTarget,
 				&cam->intrinsic.markerSelectionThreshold, m);
 
 			// Start calibration round
 			int cnt = cam->intrinsic.calibrationSelection.size();
-			if (cnt > 10 && (calibReady || (cam->intrinsic.calibrationMarkerCount != 0 && cnt >= cam->intrinsic.calibrationMarkerCount*2)))
+			if (cnt > 10 && cnt >= cam->intrinsic.calibrationMarkerCount+10 && (calibReady || (cam->intrinsic.calibrationMarkerCount != 0 && cnt >= cam->intrinsic.calibrationMarkerCount*2)))
 			{
 				wxLogMessage("Cam %d starting calibration with %d points!", m, cnt);
 
@@ -444,7 +444,7 @@ static void UpdateIntrinsicCalibration(TrackingState *state)
 				cam->intrinsic.calibrationRunning = true;
 				cam->intrinsic.calibrationFinished = false;
 				cam->intrinsic.calibrationMarkerCount = cnt;
-				cam->intrinsic.calibrationThread = new std::thread(CalibrationThreadFunction, cam);
+				cam->intrinsic.calibrationThread = new std::thread(CalibrationThreadFunction, state, cam);
 			}
 		}
 		else if (cam->intrinsic.calibrationFinished)
@@ -493,7 +493,7 @@ static void TrackMarkers(TrackingState *state)
 	// Detect markers in triangulated point cloud
 	state->tracking.poses3D.clear();
 	state->tracking.posesMSE.clear();
-	detectMarkers3D(state->tracking.points3D, state->tracking.conflicts, state->tracking.nonconflictedCount, state->tracking.poses3D, state->tracking.posesMSE, state->tracking.sigmaError);
+	detectMarkers3D(state->tracking.markerTemplate3D, state->tracking.points3D, state->tracking.conflicts, state->tracking.nonconflictedCount, state->tracking.poses3D, state->tracking.posesMSE, state->tracking.sigmaError);
 }
 
 static void UndistortPoints(TrackingState *state)

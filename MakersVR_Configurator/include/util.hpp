@@ -12,46 +12,52 @@
 #include <vector>
 #include <string>
 
-typedef struct
+struct StatValue
 {
 	double start, avg, diff, min, max, num, cur;
-} StatValue;
+};
 
-typedef struct
+struct DefMarkerPoint
 {
 	Eigen::Vector3f pos;
 	Eigen::Vector3f nrm;
 	float fov;
-} DefMarkerPoint;
+};
 
-typedef struct
+struct DefMarker
 {
+	int id;
 	std::string label;
-	std::vector<DefMarkerPoint> pts;
-} DefMarker;
+	std::vector<DefMarkerPoint> points;
+};
 
-typedef struct
+struct DefCamera
 {
 	std::string label;
 	Eigen::Vector3f pos;
 	Eigen::Matrix3f rot;
 	float distortion[5];
 	float fovH, fovV;
-} DefCamera;
+};
 
-typedef struct
+struct Config
 {
+	struct {
+		int cameraResolutionX;
+		int cameraResolutionY;
+		int cameraFramerate;
+	} mode;
+	struct {
+		float intersectError;
+		float sigmaError;
+	} tracking;
 	struct {
 		std::vector<DefMarker> calibrationMarkers;
 		std::vector<DefMarker> trackingMarkers;
 		std::vector<DefCamera> cameraDefinitions;
 		float blobPxStdDev;
 	} testing;
-	struct {
-		float intersectError;
-		float sigmaError;
-	} tracking;
-} Config;
+};
 
 /**
  * Updates the given statistical value with the new value
@@ -66,7 +72,7 @@ void parseConfigFile(std::string path, Config *config);
 /**
  * Parses a Marker Definition from a .obj file
  */
-bool parseMarkerDataFile(std::string path, std::vector<DefMarker> *markers, int fov);
+bool parseMarkerDataFile(std::string path, std::vector<DefMarker> &markers, int fov);
 
 /**
  * Parses the given calibration

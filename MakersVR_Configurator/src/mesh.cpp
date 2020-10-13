@@ -6,8 +6,6 @@
 
 #include "mesh.hpp"
 
-#include "GL/glew.h"
-
 #include <math.h>
 #include <iostream>
 

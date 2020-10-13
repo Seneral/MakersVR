@@ -9,6 +9,7 @@
 #define MIN_DISTANCE_RELATIONS 2 // cm
 
 #include "tracking.hpp"
+
 #include "wxbase.hpp" // wxLog*
 
 #include "Eigen/SVD"
@@ -48,11 +49,6 @@ struct MatchCandidate {
 };
 
 
-/* Variables */
-
-MarkerLookup marker3D;
-
-
 /* Operators */
 
 bool operator<(const struct PointRelation& a, const struct PointRelation& b) { return a.distance < b.distance; }
@@ -63,48 +59,34 @@ bool ErrorRangeComp::operator() (float value, const PointRelation& rel) { return
 /* Functions */
 
 /**
- * Initialize resources for tracking
- */
-void initTracking()
-{
-}
-
-/**
- * Cleanup of resources
- */
-void cleanTracking()
-{
-}
-
-/**
  * Sets up lookup tables for quick marker identification
  */
-void generateLookupTables(MarkerLookup *marker3D)
+void generateLookupTables(MarkerTemplate3D *marker3D)
 {
-	if (MAX_MARKER_POINTS < marker3D->markerTemplate.pts.size())
+	if (MAX_MARKER_POINTS < marker3D->points.size())
 	{
-		wxLogError("Marker has more marker points (%d) than maximum code has been compiled with (%d)", (int)marker3D->markerTemplate.pts.size(), MAX_MARKER_POINTS);
+		wxLogError("Marker has more marker points (%d) than maximum code has been compiled with (%d)", (int)marker3D->points.size(), MAX_MARKER_POINTS);
 	}
 
 	// Setup lookup tables for quick marker identification
 	marker3D->relationDist.clear();
 	marker3D->pointRelation.clear();
-	marker3D->pointRelation.resize(marker3D->markerTemplate.pts.size());
+	marker3D->pointRelation.resize(marker3D->points.size());
 
 	// Step 0: Determine upper bound for total number of relations (binominal coefficient)
 	// This estimate (n^k / k!) is excellent for small k (here k=2)
-	int relUpperBound = marker3D->markerTemplate.pts.size() * marker3D->markerTemplate.pts.size() / 2;
+	int relUpperBound = marker3D->points.size() * marker3D->points.size() / 2;
 
 	// Step 1: Create all relations
 	std::vector<PointRelation> relations;
 	relations.reserve(relUpperBound);
-	for (int i = 0; i < marker3D->markerTemplate.pts.size(); i++)
+	for (int i = 0; i < marker3D->points.size(); i++)
 	{
-		DefMarkerPoint *pt1 = &marker3D->markerTemplate.pts[i];
-		for (int j = i+1; j < marker3D->markerTemplate.pts.size(); j++)
+		Eigen::Vector3f pt1 = marker3D->points[i];
+		for (int j = i+1; j < marker3D->points.size(); j++)
 		{
-			DefMarkerPoint *pt2 = &marker3D->markerTemplate.pts[j];
-			Eigen::Vector3f dir = pt2->pos - pt1->pos;
+			Eigen::Vector3f pt2 = marker3D->points[j];
+			Eigen::Vector3f dir = pt2 - pt1;
 			float distance = dir.norm();
 			relations.push_back({ i, j, dir / distance, distance });
 		}
@@ -114,8 +96,8 @@ void generateLookupTables(MarkerLookup *marker3D)
 	std::sort(relations.begin(), relations.end());
 
 	// Step 3: Enter relevant relations
-	int *pointRelationCount = new int[marker3D->markerTemplate.pts.size()];
-	memset(pointRelationCount, 0, marker3D->markerTemplate.pts.size()*sizeof(int));
+	int *pointRelationCount = new int[marker3D->points.size()];
+	memset(pointRelationCount, 0, marker3D->points.size()*sizeof(int));
 	for (int i = 0; i < relations.size(); i++)
 	{
 		PointRelation *rel = &relations[i];
@@ -457,7 +439,7 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 	return pointCount;
 }
 
-static void kabsch(MarkerCandidate3D *candidate, const std::vector<TriangulatedPoint> &points3D)
+static void kabsch(const MarkerTemplate3D *marker3D, MarkerCandidate3D *candidate, const std::vector<TriangulatedPoint> &points3D)
 {
 	int ptCount = candidate->points.size();
 	// Step 3.0: Calculate center of mass for both marker and triangulated point set
@@ -468,7 +450,7 @@ static void kabsch(MarkerCandidate3D *candidate, const std::vector<TriangulatedP
 		int trPt = candidate->points[j];
 		int mkPt = candidate->pointMap[trPt];
 		trCenter += points3D[trPt].pos.head<3>();
-		mkCenter += marker3D.markerTemplate.pts[mkPt].pos;
+		mkCenter += marker3D->points[mkPt];
 	}
 	trCenter /= ptCount;
 	mkCenter /= ptCount;
@@ -480,7 +462,7 @@ static void kabsch(MarkerCandidate3D *candidate, const std::vector<TriangulatedP
 		int trPt = candidate->points[j];
 		int mkPt = candidate->pointMap[trPt];
 		trMat.row(j) = points3D[trPt].pos.head<3>() - trCenter;
-		mkMat.col(j) = marker3D.markerTemplate.pts[mkPt].pos - mkCenter;
+		mkMat.col(j) = marker3D->points[mkPt] - mkCenter;
 	}
 	Eigen::Matrix3f covarianceMat = mkMat * trMat;
 	// Step 3.2: Compute SVD
@@ -497,13 +479,13 @@ static void kabsch(MarkerCandidate3D *candidate, const std::vector<TriangulatedP
 /*
  * Detect Markers in the triangulated 3D Point cloud
  */
-void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE, float sigmaError)
+void detectMarkers3D(const MarkerTemplate3D *marker3D, const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE, float sigmaError)
 {
 //	wxLogMessage("--------------");
 
 	// Step 1: Get closest neighbouring points for each point
-	float maxRelevantDistance = marker3D.relationDist.size() == 0? 0.0f : 
-		marker3D.relationDist[marker3D.relationDist.size()-1].distance + 0.1f;
+	float maxRelevantDistance = marker3D->relationDist.size() == 0? 0.0f : 
+		marker3D->relationDist[marker3D->relationDist.size()-1].distance + 0.1f;
 	float maxRelevantDistanceSq = maxRelevantDistance*maxRelevantDistance;
 	std::vector<std::vector<PointRelation>> trRelations;
 	trRelations.resize(points3D.size());
@@ -540,10 +522,10 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 	assigned.resize(points3D.size());
 	// Subroutine checking the given triangulated point combination for a match in the marker, already given the possible base matches
 	auto check3PointCandidate = [&points3D, &trRelations, &candidates, &assigned, &bestCandidatePtCount, &sigmaError](
-		PointRelation *trRelBase, PointRelation *trRelArm,
+		const MarkerTemplate3D *marker3D, PointRelation *trRelBase, PointRelation *trRelArm,
 		int trPtJ, int trPtB, int trPtA,
 		float baseError, float armError,
-		std::pair<std::vector<PointRelation>::iterator, std::vector<PointRelation>::iterator> mkRelBaseRange)
+		std::pair<std::vector<PointRelation>::const_iterator, std::vector<PointRelation>::const_iterator> mkRelBaseRange)
 	{
 		for (auto mkRelBase = mkRelBaseRange.first; mkRelBase < mkRelBaseRange.second; mkRelBase++)
 		{ // Iterate over all matching base relation candidates
@@ -557,9 +539,9 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 				int mkPtB = mkPts[1-m];
 
 				// Now candidates for the arm
-				for (int n = 0; n < marker3D.pointRelation[mkPtJ].size(); n++)
+				for (int n = 0; n < marker3D->pointRelation[mkPtJ].size(); n++)
 				{
-					PointRelation *mkRelArm = &marker3D.relationDist[marker3D.pointRelation[mkPtJ][n]];
+					const PointRelation *mkRelArm = &marker3D->relationDist[marker3D->pointRelation[mkPtJ][n]];
 					int mkPtA = mkRelArm->pt1 == mkPtJ? mkRelArm->pt2 : mkRelArm->pt1;
 					if (mkPtA == mkPtB) continue;
 
@@ -602,11 +584,11 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 						// ----- Add more points -----
 
 						// Calculate estimated pose of the three points
-						kabsch(candidate, points3D);
+						kabsch(marker3D, candidate, points3D);
 
 						// Prepare assigned for marker points, used to avoid duplicate checks
 						std::vector<bool> mkPtHandled;
-						mkPtHandled.resize(marker3D.markerTemplate.pts.size());
+						mkPtHandled.resize(marker3D->points.size());
 						for (int o = 0; o < candidate->points.size(); o++)
 							mkPtHandled[candidate->pointMap[candidate->points[o]]] = true;
 
@@ -630,10 +612,10 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 							float ptError = sigmaError * points3D[j].error;
 							float distFromCoM = (points3D[j].pos.head<3>() - candidate->estTransform.translation()).norm();
 							float errorLimit = ptError + poseError * distFromCoM;
-							for (int k = 0; k < marker3D.markerTemplate.pts.size(); k++)
+							for (int k = 0; k < marker3D->points.size(); k++)
 							{
 								if (mkPtHandled[k]) continue;
-								float errorSq = (estMkPos - marker3D.markerTemplate.pts[k].pos).squaredNorm();
+								float errorSq = (estMkPos - marker3D->points[k]).squaredNorm();
 								if (errorSq < errorLimit*errorLimit)
 								{
 //									wxLogMessage("|  |  |  |    - Added (%d - %d) - dist %f, max %f!", j, k, std::sqrt(errorSq), errorLimit);
@@ -658,7 +640,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 							bestCandidatePtCount = candidate->points.size();
 
 						// Calculate final candidate pose
-						kabsch(candidate, points3D);
+						kabsch(marker3D, candidate, points3D);
 
 						// One candidate for these three points is enough
 						return;
@@ -694,7 +676,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 
 			// Find potential matches for the base using the marker lookup table with distance within the error range
 			float baseError = sigmaError * (points3D[trRelBase->pt1].error + points3D[trRelBase->pt2].error);
-			auto mkRelBaseRange = std::equal_range(marker3D.relationDist.begin(), marker3D.relationDist.end(), trRelBase->distance, ErrorRangeComp(baseError));
+			auto mkRelBaseRange = std::equal_range(marker3D->relationDist.begin(), marker3D->relationDist.end(), trRelBase->distance, ErrorRangeComp(baseError));
 //			wxLogMessage("Tr Base Relation (%d - %d) of length %f += %f: %d potential matches in marker!", trRelBase->pt1, trRelBase->pt2, trRelBase->distance, baseError, std::distance(mkRelBaseRange.first, mkRelBaseRange.second));
 			if (mkRelBaseRange.first >= mkRelBaseRange.second) continue;
 			// Found some possible candidates within error range
@@ -720,7 +702,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 				// Check 3 points if they are a valid candidate
 				// and if so, extend to include matching neighboring points
 				// if 5+ points have been found, it is an almost certain match and points are assigned to not be checked again
-				check3PointCandidate(
+				check3PointCandidate(marker3D,
 					trRelBase, trRelArm,
 					trRelBase->pt1, trRelBase->pt2, trRelArm->pt2,
 					baseError, armError,
@@ -749,7 +731,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 				// Check 3 points if they are a valid candidate
 				// and if so, extend to include matching neighboring points
 				// if 5+ points have been found, it is an almost certain match and points are assigned to not be checked again
-				check3PointCandidate(
+				check3PointCandidate(marker3D,
 					trRelBase, trRelArm,
 					trRelBase->pt2, trRelBase->pt1, trRelArm->pt2,
 					baseError, armError,
@@ -776,7 +758,7 @@ void detectMarkers3D(const std::vector<TriangulatedPoint> &points3D, const std::
 				int trPt = candidate->points[j];
 				int mkPt = candidate->pointMap[trPt];
 				Eigen::Vector3f trPosGT = points3D[trPt].pos.head<3>();
-				Eigen::Vector3f mkPos = marker3D.markerTemplate.pts[mkPt].pos;
+				Eigen::Vector3f mkPos = marker3D->points[mkPt];
 				Eigen::Vector3f trPosRC = candidate->estTransform * mkPos;
 				meanSquaredError += (trPosRC - trPosGT).squaredNorm();
 			}
