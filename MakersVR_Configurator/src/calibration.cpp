@@ -252,51 +252,6 @@ void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const st
 	}
 }
 
-
-
-/*
-
-// Find closest blob as heading
-					uint_fast8_t h = -1;
-					float headLen = (float)1000000.0f;
-					for (int i = 0; i < points2D.size(); i++)
-					{
-						if (i == c || i == a || i == b) continue;
-
-						// Check size difference
-						if (std::min(sizeMin, pointSizes[i]) * MAX_SIZE_DIFF < std::max(sizeMax, pointSizes[i])) continue;
-
-						// Get Head parameters
-						float hLen = (ptC-points2D[i]).norm();
-						if (hLen < baseLen*10.0 && hLen < headLen)
-						{ // Best head candidate so far
-							headLen = hLen;
-							h = i;
-						}
-					}
-					if (h != -1)
-					{
-						Eigen::Vector2f ptH = points2D[h];
-
-						// Get inner angle between base and head
-						Eigen::Vector2f head = ptC-ptH;
-						float innerDot = base.dot(head);
-						float innerAngle = std::acos(innerDot / (baseLen * headLen)) / PI * 180 - 90;
-
-						// Register marker
-						// TODO: order a,b depending on which side h is using innerAngle
-						markerCandidates.push_back({
-							c, a, b, (uint8_t)h, baseCenterError
-						});
-#ifdef MARKER_DEBUG
-						std::cout << "Registered marker with base angle " << baseAngle << ", length " << baseLen << " and error " << baseCenterError << " head rel angle " << innerAngle << " and length " << headLen << "!" << std::endl;
-#endif
-						goto foundMarker;
-					}
-
-
-*/
-
 #ifdef USE_OPENCV
 /**
  * Interprets OpenCV position and rotation in camera spaces and transforms it into correct scene transformations

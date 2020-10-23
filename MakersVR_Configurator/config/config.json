@@ -5,11 +5,12 @@
 		"cameraFramerate": 20
 	},
 	"tracking" : {
-		"intersectError": 0.05,
+		"minIntersectError": 0.02,
+		"maxIntersectError": 0.05,
 		"sigmaError": 3
 	},
 	"testsetup" : {
-		"blobPxStdDev": 0.1,
+		"blobPxStdDev": 0.2,
 		"defaultFoV" : 160,
 		"calibrationMarkers" : [
 			"config/Marker_PadBoard6Pt.obj",

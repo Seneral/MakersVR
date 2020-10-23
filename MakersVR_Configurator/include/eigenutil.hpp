@@ -10,14 +10,16 @@
 #include "Eigen/Core"
 #include "Eigen/Geometry"
 
+#include <string>
+
 
 /* Structures */
 
 struct Camera
 {
+	std::string label;
 	Eigen::Isometry3f transform;
 	int width, height;
-	float aspect;
 	float fovV, fovH;
 	struct {
 		float k1;

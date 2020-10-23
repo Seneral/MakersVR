@@ -30,16 +30,6 @@ struct Intersection
 	Ray* rays[MAX_CAMERA_COUNT];
 };
 
-struct MarkerCandidate3D
-{
-	float validity;
-	std::vector<int> points;
-	std::vector<int> pointMap;
-	// To get triangulated points: points[points[i]]
-	// To get actual points: marker[pointMap[points3D[i]]]
-	Eigen::Isometry3f estTransform;
-};
-
 struct MatchCandidate {
 	int poseC; // Current
 	int poseL; // Last
@@ -153,7 +143,7 @@ void rayIntersect(const Ray *ray1, const Ray *ray2, float *sec1, float *sec2)
  * Calculate the intersection points between rays of separate groups
  * Returns how many of the points are not conflicted (those are at the beginning of the array)
  */
-int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::vector<TriangulatedPoint> &points3D, std::vector<std::vector<int>> &conflicts, float errorLimit)
+int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::vector<TriangulatedPoint> &points3D, std::vector<std::vector<int>> &conflicts, float maxError, float minError)
 {
 	int groupCnt = rayGroups.size();
 	if (groupCnt > MAX_CAMERA_COUNT)
@@ -187,7 +177,7 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 					Eigen::Vector3f pos2 = ray2->pos + ray2->dir * sec2;
 					// Calculate distance
 					float errorSq = (pos1-pos2).squaredNorm()/4;
-					if (errorSq > errorLimit*errorLimit) continue;
+					if (errorSq > maxError*maxError) continue;
 					// Increase ray intersection count
 					ray1->intersectionCount++;
 					ray2->intersectionCount++;
@@ -195,7 +185,7 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 					Intersection intersection;;
 					memset(&intersection, 0, sizeof(Intersection));
 					intersection.center = (pos1+pos2)/2;
-					intersection.error = std::max(0.01f, std::sqrt(errorSq));
+					intersection.error = std::max(minError, std::sqrt(errorSq));
 					intersection.rays[i] = ray1;
 					intersection.rays[j] = ray2;
 					intersection.merge = NULL;
@@ -237,7 +227,7 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 				if (ixm->rays[r2] == NULL)
 				{ // Intersection is with a different ray group, check proximity to determine if merge of conflict
 					float error = (ixm->center - ix->center).norm();
-					if (error <= errorLimit)
+					if (error <= maxError)
 					{ // Merge intersections, now consisting of three rays intersecting
 						mergers.push_back(ixm);
 						continue;
@@ -251,7 +241,7 @@ int triangulateRayIntersections(std::vector<std::vector<Ray>*> &rayGroups, std::
 				if (ixm->rays[r1] == NULL)
 				{ // Intersection is with a different ray group, check proximity to determine if merge of conflict
 					float error = (ixm->center - ix->center).norm();
-					if (error <= errorLimit)
+					if (error <= maxError)
 					{ // Merge intersections, now consisting of three rays intersecting
 						mergers.push_back(ixm);
 						continue;
@@ -472,17 +462,72 @@ static void kabsch(const MarkerTemplate3D *marker3D, MarkerCandidate3D *candidat
 	// Step 3.3: Compute optimal rotation matrix and transformation
 	float d = (V * U).determinant();
 	Eigen::Matrix3f rot = V * Eigen::AlignedScaling3f(1, 1, d) * U;
-	candidate->estTransform.linear() = rot;
-	candidate->estTransform.translation() = (trCenter - rot * mkCenter).transpose();
+	candidate->pose.linear() = rot;
+	candidate->pose.translation() = (trCenter - rot * mkCenter).transpose();
 }
 
-/*
- * Detect Markers in the triangulated 3D Point cloud
+/**
+ * Calculate MSE of candidate marker in given point cloud
  */
-void detectMarkers3D(const MarkerTemplate3D *marker3D, const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE, float sigmaError)
+float calculateCandidateMSE(const MarkerTemplate3D *marker3D, const std::vector<TriangulatedPoint> &points3D, const MarkerCandidate3D *candidate)
 {
-//	wxLogMessage("--------------");
+	float meanSquaredError = 0.0f;
+	for (int j = 0; j < candidate->points.size(); j++)
+	{
+		int trPt = candidate->points[j];
+		int mkPt = candidate->pointMap[trPt];
+		Eigen::Vector3f trPosGT = points3D[trPt].pos.head<3>();
+		Eigen::Vector3f mkPos = marker3D->points[mkPt];
+		Eigen::Vector3f trPosRC = candidate->pose * mkPos;
+		meanSquaredError += (trPosRC - trPosGT).squaredNorm();
+	}
+	return meanSquaredError / candidate->points.size();
+}
 
+/**
+ * Picks the best candidate by point count and internal MSE.
+ * Returns the index, MSE and count of other candidates with the same maximum point count
+ */
+std::tuple<int,float,int> getBestMarkerCandidate(const MarkerTemplate3D *marker3D, const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, const std::vector<MarkerCandidate3D> &candidates)
+{
+	// Find maximum point count and how many candidates have this point count
+	int bestCandPtCnt = 0, bestCandCount = 0;
+	for (int i = 0; i < candidates.size(); i++)
+	{
+		if (bestCandPtCnt < candidates[i].points.size())
+		{
+			bestCandPtCnt = candidates[i].points.size();
+			bestCandCount = 1;
+		}
+		else if (bestCandPtCnt == candidates[i].points.size())
+			bestCandCount++;
+	}
+
+	// Find the best candidate with maximum point count and best internal MSE
+	float bestCandMSE = 99999.0f;
+	int bestCandIndex = -1;
+	for (int i = 0; i < candidates.size(); i++)
+	{
+		const MarkerCandidate3D *candidate = &candidates[i];
+		if (candidate->points.size() == bestCandPtCnt)
+		{ // Calculate mean square error
+			float meanSquaredError = calculateCandidateMSE(marker3D, points3D, candidate);
+			if (meanSquaredError < bestCandMSE)
+			{
+				bestCandMSE = meanSquaredError;
+				bestCandIndex = i;
+			}
+		}
+	}
+
+	return { bestCandIndex, bestCandMSE, bestCandCount };
+}
+
+/**
+ * Detect a marker in the triangulated 3D Point cloud, returns all candidates
+ */
+void detectMarker3D(const MarkerTemplate3D *marker3D, const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<MarkerCandidate3D> &candidates, float sigmaError, bool quickAssign)
+{
 	// Step 1: Get closest neighbouring points for each point
 	float maxRelevantDistance = marker3D->relationDist.size() == 0? 0.0f : 
 		marker3D->relationDist[marker3D->relationDist.size()-1].distance + 0.1f;
@@ -507,7 +552,6 @@ void detectMarkers3D(const MarkerTemplate3D *marker3D, const std::vector<Triangu
 //				wxLogMessage("Relation (%d - %d)", i, j);
 			}
 		}
-//		std::sort(trRelations[i].begin(), trRelations[i].end());
 	}
 
 	// Step 2: Find candidates
@@ -515,13 +559,11 @@ void detectMarkers3D(const MarkerTemplate3D *marker3D, const std::vector<Triangu
 	// Step 2.2: Calculate initial pose using kabsch algorithm on 3 points
 	// Step 2.3: Iterate over unchecked points in both clouds and include in candidate if match is found
 	// Step 2.4: Calculate pose again using kabsch algorithm
-	std::vector<MarkerCandidate3D> candidates;
-	int bestCandidatePtCount = 0;
 	// Helper state, true for points which have been assigned to a candidate with more than 4 points
 	std::vector<bool> assigned;
 	assigned.resize(points3D.size());
 	// Subroutine checking the given triangulated point combination for a match in the marker, already given the possible base matches
-	auto check3PointCandidate = [&points3D, &trRelations, &candidates, &assigned, &bestCandidatePtCount, &sigmaError](
+	auto check3PointCandidate = [&points3D, &trRelations, &candidates, &assigned, &sigmaError, &quickAssign](
 		const MarkerTemplate3D *marker3D, PointRelation *trRelBase, PointRelation *trRelArm,
 		int trPtJ, int trPtB, int trPtA,
 		float baseError, float armError,
@@ -563,7 +605,6 @@ void detectMarkers3D(const MarkerTemplate3D *marker3D, const std::vector<Triangu
 						// Register as marker candidate - candidate pose could now be extracted
 						candidates.push_back({});
 						MarkerCandidate3D *candidate = &candidates[candidates.size()-1];
-						candidate->validity = 1.0f;
 						candidate->pointMap.resize(points3D.size());
 						memset(candidate->pointMap.data(), -1, points3D.size()*sizeof(int));
 						// Add initial three points
@@ -597,20 +638,20 @@ void detectMarkers3D(const MarkerTemplate3D *marker3D, const std::vector<Triangu
 						for (int o = 0; o < candidate->points.size(); o++)
 						{
 							int trPt = candidate->points[o];
-							float distFromCoM = (points3D[trPt].pos.head<3>() - candidate->estTransform.translation()).norm();
+							float distFromCoM = (points3D[trPt].pos.head<3>() - candidate->pose.translation()).norm();
 							poseError += points3D[trPt].error / distFromCoM;
 						}
-						poseError = poseError / candidate->points.size();
+						poseError = sigmaError * poseError / candidate->points.size();
 
 						// Brute force check all points
-						Eigen::Isometry3f invTransform = candidate->estTransform.inverse();
+						Eigen::Isometry3f invTransform = candidate->pose.inverse();
 						for (int j = 0; j < points3D.size(); j++)
 						{
 							if (assigned[j]) continue;
 							if (candidate->pointMap[j] >= 0) continue;
 							Eigen::Vector3f estMkPos = invTransform * points3D[j].pos.head<3>();
 							float ptError = sigmaError * points3D[j].error;
-							float distFromCoM = (points3D[j].pos.head<3>() - candidate->estTransform.translation()).norm();
+							float distFromCoM = (points3D[j].pos.head<3>() - candidate->pose.translation()).norm();
 							float errorLimit = ptError + poseError * distFromCoM;
 							for (int k = 0; k < marker3D->points.size(); k++)
 							{
@@ -624,20 +665,18 @@ void detectMarkers3D(const MarkerTemplate3D *marker3D, const std::vector<Triangu
 									mkPtHandled[k] = true;
 									break;
 								}
-								else if (errorSq < errorLimit*errorLimit*2)
+								else if (errorSq < errorLimit*errorLimit*5)
 								{
 //									wxLogMessage("|  |  |  |    - Rejected (%d - %d) - dist %f, max %f!", j, k, std::sqrt(errorSq), errorLimit);
 								}
 							}
 						}
 
-						if (candidate->points.size() > 4)
+						if (candidate->points.size() > 4 && quickAssign)
 						{ // Candidate is almost certain, mark points as assigned
 							for (int o = 0; o < candidate->points.size(); o++)
 								assigned[candidate->points[o]] = true;
 						}
-						if (candidate->points.size() > bestCandidatePtCount)
-							bestCandidatePtCount = candidate->points.size();
 
 						// Calculate final candidate pose
 						kabsch(marker3D, candidate, points3D);
@@ -741,59 +780,67 @@ void detectMarkers3D(const MarkerTemplate3D *marker3D, const std::vector<Triangu
 			}
 		}
 	}
-//	wxLogMessage("------------- %d initial candidates -----", (int)candidates.size());
+}
 
-	// Step 3: Find the best candidate for this marker, first by amount of points and then by internal MSE
-	float lowestMSE = 99999.0f;
-	int lowestMSEInd = -1;
-	for (int i = 0; i < candidates.size(); i++)
+/**
+ * Detect a marker in the triangulated 3D Point cloud, returns the best candidate (or none with point-count 0 if none found)
+ */
+float detectMarker3D(const MarkerTemplate3D *marker3D, const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, MarkerCandidate3D *bestCandidate, float sigmaError, bool quickAssign)
+{
+	std::vector<MarkerCandidate3D> candidates;
+	detectMarker3D(marker3D, points3D, conflicts, nonconflictedCount, candidates, sigmaError, quickAssign);
+
+	std::tuple<int,float,int> bestCand = getBestMarkerCandidate(marker3D, points3D, conflicts, nonconflictedCount, candidates);
+
+	int index = std::get<0>(bestCand);
+	if (index >= 0)
 	{
-		MarkerCandidate3D *candidate = &candidates[i];
-		if (candidate->points.size() == bestCandidatePtCount)
-		{
-			// Calculate mean square error
-			float meanSquaredError = 0.0f;
-			for (int j = 0; j < candidate->points.size(); j++)
-			{
-				int trPt = candidate->points[j];
-				int mkPt = candidate->pointMap[trPt];
-				Eigen::Vector3f trPosGT = points3D[trPt].pos.head<3>();
-				Eigen::Vector3f mkPos = marker3D->points[mkPt];
-				Eigen::Vector3f trPosRC = candidate->estTransform * mkPos;
-				meanSquaredError += (trPosRC - trPosGT).squaredNorm();
-			}
-			meanSquaredError /= candidate->points.size();
-
-			if (lowestMSE > meanSquaredError)
-			{ // New lowest MSE
-				lowestMSE = meanSquaredError;
-				lowestMSEInd = i;
-			}
-		}
-	}
-	if (lowestMSEInd >= 0)
-	{ // Got a candidate
-		MarkerCandidate3D *candidate = &candidates[lowestMSEInd];
-		poses3D.push_back(candidate->estTransform);
-		posesMSE.push_back({ lowestMSE, candidate->points.size() });
-//		wxLogMessage("Best candidate %d of %d total with %d points has internal MSE of %f", lowestMSEInd, (int)candidates.size(), (int)candidate->points.size(), lowestMSE);
+		bestCandidate->pose = candidates[index].pose;
+		bestCandidate->pointMap.swap(candidates[index].pointMap);
+		bestCandidate->points.swap(candidates[index].points);
 	}
 	else
-	{ // No candidate at all
-		//wxLogMessage("No candidate has been found! %d points, of those %d not conflicted", (int)points3D.size(), nonconflictedCount);
-		/*for (int i = 0; i < points3D.size(); i++)
-		{
-			float min = 0, max = maxRelevantDistance;
-			if (trRelations[i].size() > 0)
-			{
-				min = trRelations[i][0].distance;
-				max = trRelations[i][trRelations[i].size()-1].distance;
-			}
-			wxLogMessage("--> Point %d got a total of %d points from %f to %f cm", i, (int)trRelations[i].size(), min, max);
-		}*/
+	{
+		bestCandidate->points.clear();
 	}
+	return std::get<1>(bestCand);
+}
 
-//	wxLogMessage("---------");
+/**
+ * Detect a marker in the triangulated 3D Point cloud, returns all candidates with respective MSE and point count
+ */
+void detectMarker3D(const MarkerTemplate3D *marker3D, const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, std::vector<Eigen::Isometry3f> &poses3D, std::vector<std::pair<float,int>> &posesMSE, float sigmaError, bool quickAssign)
+{
+	std::vector<MarkerCandidate3D> candidates;
+	detectMarker3D(marker3D, points3D, conflicts, nonconflictedCount, candidates, sigmaError, quickAssign);
+
+	// Calculate MSE of candidates and register
+	poses3D.reserve(poses3D.size() + candidates.size());
+	posesMSE.reserve(posesMSE.size() + candidates.size());
+	for (int i = 0; i < candidates.size(); i++)
+	{
+		// Register candidate
+		MarkerCandidate3D *candidate = &candidates[i];
+		poses3D.push_back(candidate->pose);
+		posesMSE.push_back({ calculateCandidateMSE(marker3D, points3D, candidate), candidate->points.size() });
+	}
+}
+
+/**
+ * Detect a marker in the triangulated 3D Point cloud, returns the best candidate (or none with point-count 0 if none found)
+ */
+std::tuple<Eigen::Isometry3f, float, int> detectMarker3D(const MarkerTemplate3D *marker3D, const std::vector<TriangulatedPoint> &points3D, const std::vector<std::vector<int>> &conflicts, int nonconflictedCount, float sigmaError, bool quickAssign)
+{
+	std::vector<MarkerCandidate3D> candidates;
+	detectMarker3D(marker3D, points3D, conflicts, nonconflictedCount, candidates, sigmaError, quickAssign);
+
+	std::tuple<int,float,int> bestCand = getBestMarkerCandidate(marker3D, points3D, conflicts, nonconflictedCount, candidates);
+
+	int index = std::get<0>(bestCand);
+	if (index >= 0)
+		return { candidates[index].pose, std::get<1>(bestCand), candidates[index].points.size() };
+	else
+		return { Eigen::Isometry3f::Identity(), 0, 0 };
 }
 
 /**

@@ -60,6 +60,7 @@ wxIMPLEMENT_APP(ConfiguratorApp);
 bool ConfiguratorApp::OnInit()
 {
 	m_state = STATE_Idle;
+	m_globalState = {};
 
 	// Read config
 	parseConfigFile("config/config.json", &m_config);
@@ -67,7 +68,7 @@ bool ConfiguratorApp::OnInit()
 	// Get built-in calibration markers
 	getBuiltInMarkers(m_globalState.calibration.markerTemplates2D);
 
-	// Copy testing markers into database
+	// Copy calibration testing markers into database
 	int prevCalibCnt = m_globalState.calibration.markerTemplates2D.size();
 	m_globalState.calibration.markerTemplates2D.reserve(prevCalibCnt + m_config.testing.calibrationMarkers.size());
 	for (int i = 0; i < m_config.testing.calibrationMarkers.size(); i++)
@@ -75,25 +76,17 @@ bool ConfiguratorApp::OnInit()
 		m_globalState.calibration.markerTemplates2D.push_back(m_config.testing.calibrationMarkers[i]);
 		m_globalState.calibration.markerTemplates2D[prevCalibCnt+i].id = prevCalibCnt+i;
 	}
-	if (m_globalState.calibration.markerTemplates2D.size() > 0) m_globalState.calibration.markerTemplate2D = &m_globalState.calibration.markerTemplates2D[0];
+	if (m_globalState.calibration.markerTemplates2D.size() > 0)
+		m_globalState.calibration.markerTemplate2D = &m_globalState.calibration.markerTemplates2D[0];
 
-	// Copy testing markers into database
-	int prevTrackCnt = m_globalState.tracking.markerTemplates3D.size();
-	m_globalState.tracking.markerTemplates3D.resize(prevTrackCnt + m_config.testing.trackingMarkers.size());
+	// Assign IDs to tracking testing markers (trying to be consistent)
 	for (int i = 0; i < m_config.testing.trackingMarkers.size(); i++)
+		m_config.testing.trackingMarkers[i].id = -i-1;
+	if (m_config.testing.trackingMarkers.size() > 0)
 	{
-		DefMarker *markerDef = &m_config.testing.trackingMarkers[i];
-		MarkerTemplate3D *marker = &m_globalState.tracking.markerTemplates3D[prevTrackCnt+i];
-		marker->label = markerDef->label;
-		marker->id = -i-1;
-		marker->points.reserve(markerDef->points.size());
-		for (int j = 0; j < markerDef->points.size(); j++)
-			marker->points.push_back(markerDef->points[j].pos);
-		generateLookupTables(marker);
+		m_globalState.testing.markerTemplate3D = &m_config.testing.trackingMarkers[0];
+		m_globalState.tracking.trackID = m_globalState.testing.markerTemplate3D->id; // TODO: Detect marker ID
 	}
-	if (m_globalState.tracking.markerTemplates3D.size() > 0) m_globalState.tracking.markerTemplate3D = &m_globalState.tracking.markerTemplates3D[0];
-
-	// TODO: Copy calibrated tracking markers into database
 
 	// Open main frame
 	m_frame = new ConfiguratorFrame();
@@ -147,10 +140,20 @@ void ConfiguratorApp::Connect()
 		if (comm_connect(&m_commState, true))
 		{
 			wxLogMessage("Connected to Marker Detector!");
-			m_globalState = {};
-			// Load calibration
+
+			// Load calibration (camera + markers)
 			std::vector<Camera> cameraCalibrations;
-			parseCalibrationFile("config/calib.json", cameraCalibrations);
+			parseCalibrationFile("config/calib.json", cameraCalibrations, m_globalState.tracking.markerTemplates3D);
+			for (int i = 0; i < m_globalState.tracking.markerTemplates3D.size(); i++)
+				generateLookupTables(&m_globalState.tracking.markerTemplates3D[i]);
+
+			// Set tracking parameters
+			m_globalState.testing.isTesting = false;
+			m_globalState.tracking.sigmaError = m_config.tracking.sigmaError;
+			m_globalState.tracking.minIntersectError = m_config.tracking.minIntersectError;
+			m_globalState.tracking.maxIntersectError = m_config.tracking.maxIntersectError;
+
+			// Setup cameras (TODO: Wait for Marker Tracker to report number of connected cameras)
 			m_globalState.cameras.resize(cameraCalibrations.size());
 			for (int i = 0; i < cameraCalibrations.size(); i++)
 			{
@@ -158,8 +161,9 @@ void ConfiguratorApp::Connect()
 				cam->camera = cameraCalibrations[i];
 				cam->camera.width = m_config.mode.cameraResolutionX;
 				cam->camera.height = m_config.mode.cameraResolutionY;
-				m_cameraFrames.push_back(new CameraFrame("MakersVR MarkerDetector View"));
+				m_cameraFrames.push_back(new CameraFrame("MarkerDetector: " + cam->camera.label));
 			}
+
 			// Enter phase
 			m_state = STATE_Connected;
 			EnterPhase(&m_globalState, PHASE_None);
@@ -199,36 +203,43 @@ void ConfiguratorApp::StartTesting(enum ControlPhase phase)
 	Disconnect();
 	StopTesting();
 	wxLogMessage("Starting testing phase %d!", (int)phase);
-	// Load calibration
+
+	// Clear existing testing state
+	DiscardPhase(&m_globalState);
+
+	// Load calibration (camera + markers)
 	std::vector<Camera> cameraCalibrations;
-	parseCalibrationFile("config/calib.json", cameraCalibrations);
+	parseCalibrationFile("config/calib.json", cameraCalibrations, m_globalState.tracking.markerTemplates3D);
+	for (int i = 0; i < m_globalState.tracking.markerTemplates3D.size(); i++)
+		generateLookupTables(&m_globalState.tracking.markerTemplates3D[i]);
 	if (cameraCalibrations.size() < m_config.testing.cameraDefinitions.size())
-		phase = PHASE_Calibration_Intrinsic; // Force calibration
-	// Set testing&tracking parameters
+		phase = PHASE_Calibration_Intrinsic; // Force calibration phase
+
+	// Set testing & tracking parameters
+	m_globalState.testing.isTesting = true;
 	m_globalState.testing.blobPxStdDev = m_config.testing.blobPxStdDev;
 	m_globalState.tracking.sigmaError = m_config.tracking.sigmaError;
-	m_globalState.tracking.intersectError = m_config.tracking.intersectError;
+	m_globalState.tracking.minIntersectError = m_config.tracking.minIntersectError;
+	m_globalState.tracking.maxIntersectError = m_config.tracking.maxIntersectError;
+
 	// Add testing cameras
 	m_globalState.cameras.resize(m_config.testing.cameraDefinitions.size());
 	for (int i = 0; i < m_config.testing.cameraDefinitions.size(); i++)
 	{
-		DefCamera *def = &m_config.testing.cameraDefinitions[i];
 		CameraState *cam = &m_globalState.cameras[i];
 		// Ground truth testing camera
+		cam->testing.camera = m_config.testing.cameraDefinitions[i];
 		cam->testing.camera.width = m_config.mode.cameraResolutionX;
 		cam->testing.camera.height = m_config.mode.cameraResolutionY;
-		cam->testing.camera.fovH = def->fovH;
-		cam->testing.camera.fovV = def->fovV;
-		memcpy(&cam->testing.camera.distortion, def->distortion, sizeof(cam->testing.camera.distortion));
-		//cam.testing.camera.distortion = { 0.132183f, -0.186451f, 0.001267f, 0.000618f, 0.000000f };
-		cam->testing.camera.transform = createModelMatrix(def->pos, def->rot);
 		// Calibrated actual camera
 		if (cameraCalibrations.size() > i)
 			cam->camera = cameraCalibrations[i];
+		else // Fall back to ground truth
+			cam->camera = m_config.testing.cameraDefinitions[i];
 		cam->camera.width = m_config.mode.cameraResolutionX;
 		cam->camera.height = m_config.mode.cameraResolutionY;
 		// Register and create frame
-		m_cameraFrames.push_back(new CameraFrame(def->label));
+		m_cameraFrames.push_back(new CameraFrame(cam->testing.camera.label));
 
 		{
 			// Debug
@@ -243,24 +254,73 @@ void ConfiguratorApp::StartTesting(enum ControlPhase phase)
 					cCam->distortion.k1, cCam->distortion.k2, cCam->distortion.p1, cCam->distortion.p2, cCam->distortion.k3);
 			}
 			Eigen::Vector3f posGT = tCam->transform.translation();
-			Eigen::Vector3f rotGT = getEulerXYZ(tCam->transform.rotation());
-			wxLogMessage("Cam %d testing transform: Pos (%.2f, %.2f, %.2f), Rot (%.2f, %.2f, %.2f)", i,
+			Eigen::Vector3f rotGT = getEulerXYZ(tCam->transform.rotation()) / PI * 180;
+			wxLogMessage("Cam %d testing transform: Pos/cm (%.2f, %.2f, %.2f), Rot/\u00B0 (%.2f, %.2f, %.2f)", i,
 				posGT.x(), posGT.y(), posGT.z(), rotGT.x(), rotGT.y(), rotGT.z());
 			if (cCam->transform.translation().sum() != 0)
 			{
 				Eigen::Vector3f posCB = cCam->transform.translation();
-				Eigen::Vector3f rotCB = getEulerXYZ(cCam->transform.rotation());
+				Eigen::Vector3f rotCB = getEulerXYZ(cCam->transform.rotation()) / PI * 180;
 				Eigen::Vector3f tDiff = cCam->transform.translation() - tCam->transform.translation();
 				Eigen::Matrix3f rDiff = tCam->transform.rotation() * cCam->transform.rotation().transpose();
 				float tError = tDiff.norm(), rError = Eigen::AngleAxisf(rDiff).angle()/PI*180;
-				wxLogMessage("Cam %d calibrated transform: Pos (%.2f, %.2f, %.2f), Rot (%.2f, %.2f, %.2f), Error: (%.4fmm, %.4f\u00B0)", i,
+				wxLogMessage("Cam %d calibrated transform: Pos/cm (%.2f, %.2f, %.2f), Rot/\u00B0 (%.2f, %.2f, %.2f), Error: (%.4fmm, %.4f\u00B0)", i,
 					posCB.x(), posCB.y(), posCB.z(), rotCB.x(), rotCB.y(), rotCB.z(), tError*10, rError);
 			}
 		}
 	}
+
+	// Add testing markers for which there isn't already a calibration
+	auto *markers = &m_globalState.tracking.markerTemplates3D;
+	for (int i = 0; i < m_config.testing.trackingMarkers.size(); i++)
+	{
+		DefMarker *markerDef = &m_config.testing.trackingMarkers[i];
+
+		// Check if this marker has been calibrated yet
+		auto existingCalib = std::find_if(markers->begin(), markers->end(), [markerDef](auto &m){ return m.id == markerDef->id; });
+		if (existingCalib != markers->end())
+		{ // Determine offset of calibrated marker template compared to ground truth
+			wxLogMessage("Using calibrated marker template %d for testing marker %s (%d)!", existingCalib->id, markerDef->label,markerDef->id);
+
+			// Set ground truth marker as point cloud
+			std::vector<TriangulatedPoint> pointCloud;
+			pointCloud.reserve(markerDef->points.size());
+			for (int i = 0; i < markerDef->points.size(); i++)
+				pointCloud.push_back({ markerDef->points[i].pos, m_globalState.tracking.maxIntersectError, 1 });
+
+			// Detect match using calibrated marker
+			auto pose = detectMarker3D(existingCalib._Ptr, pointCloud, {}, pointCloud.size(), m_globalState.tracking.sigmaError*2, false);
+			if (std::get<2>(pose) > 0)
+			{ // Read out offset transform and correct for it to get accurate error calculations
+				for (int j = 0; j < existingCalib->points.size(); j++)
+					existingCalib->points[j] = std::get<0>(pose) * existingCalib->points[j];
+				wxLogMessage("Correcting for %.4fmm calibration offset", std::get<0>(pose).translation().norm()*10);
+			}
+
+			// No need to re-generate lookup tables for marker detection
+		}
+		else
+		{
+			wxLogMessage("Using ground truth marker template for testing marker %s (%d)!", markerDef->label, markerDef->id);
+
+			// Add ground truth as marker template
+			markers->push_back({});
+			MarkerTemplate3D *marker = &markers->at(markers->size()-1);
+			marker->label = markerDef->label;
+			marker->id = markerDef->id;
+			marker->points.reserve(markerDef->points.size());
+			for (int j = 0; j < markerDef->points.size(); j++)
+				marker->points.push_back(markerDef->points[j].pos);
+
+			// Generate lookup tables for marker detection
+			generateLookupTables(marker);
+		}
+	}
+
 	// Initialize state
 	m_state = STATE_Testing;
 	EnterPhase(&m_globalState, phase);
+
 	// Start test data thread
 	runTestThread = true;
 	if (testThread == NULL) testThread = new std::thread(ThreadSendTestData);
@@ -283,7 +343,7 @@ void ConfiguratorApp::StopTesting()
 	m_cameraFrames.clear();
 	m_globalState.cameras.clear();
 	m_state = STATE_Idle;
-	EnterPhase(&m_globalState, PHASE_None);
+	DiscardPhase(&m_globalState);
 }
 void ConfiguratorApp::OnCloseCameraFrame(CameraFrame *frame)
 {
@@ -350,18 +410,17 @@ ConfiguratorFrame::ConfiguratorFrame()
 		DefMarker *calibMarker = &state->calibration.markerTemplates2D[i];
 		calibMarkerMenu->Append(ID_Marker+i, calibMarker->label, "Select this calibration marker.");
 		Bind(wxEVT_COMMAND_MENU_SELECTED, &ConfiguratorFrame::OnSelectMarker, this, ID_Marker+i);
-		wxLogMessage("Read Calibration Marker '%s' (%d) with %d points!", calibMarker->label, calibMarker->id, (int)calibMarker->points.size());
+		wxLogMessage("Read calibration Marker '%s' (%d) with %d points!", calibMarker->label, calibMarker->id, (int)calibMarker->points.size());
 	}
 
-	// Fill tracking marker selection (only config, not calibrated markers)
+	// Fill tracking marker selection (only testing, not calibrated markers)
 	int idOffset = state->calibration.markerTemplates2D.size();
-	for (int i = 0; i < state->tracking.markerTemplates3D.size(); i++)
+	for (int i = 0; i < wxGetApp().m_config.testing.trackingMarkers.size(); i++)
 	{
-		MarkerTemplate3D *trackMarker = &state->tracking.markerTemplates3D[i];
-		if (trackMarker->id >= 0) continue; // Can't select calibrated markers, since there is not enough information (LED direction, fov) to simulate it
+		DefMarker *trackMarker = &wxGetApp().m_config.testing.trackingMarkers[i];
 		trackMarkerMenu->Append(ID_Marker+idOffset+i, trackMarker->label, "Select this tracking marker.");
 		Bind(wxEVT_COMMAND_MENU_SELECTED, &ConfiguratorFrame::OnSelectMarker, this, ID_Marker+idOffset+i);
-		wxLogMessage("Read Tracking Marker '%s' (%d) with %d points!", trackMarker->label, trackMarker->id, (int)trackMarker->points.size());
+		wxLogMessage("Read test tracking marker '%s' (%d) with %d points!", trackMarker->label, trackMarker->id, (int)trackMarker->points.size());
 	}
 
 	Show();
@@ -411,8 +470,9 @@ void ConfiguratorFrame::OnSelectMarker(wxCommandEvent &event)
 	}
 	else
 	{ // Dealing with tracking marker
-		state->tracking.markerTemplate3D = &state->tracking.markerTemplates3D[markerID-idOffset];
-		wxLogMessage("Select tracking marker %s (%d) with %d points!", state->tracking.markerTemplate3D->label, state->tracking.markerTemplate3D->id, (int)state->tracking.markerTemplate3D->points.size());
+		state->testing.markerTemplate3D = &wxGetApp().m_config.testing.trackingMarkers[markerID-idOffset];
+		state->tracking.trackID = state->testing.markerTemplate3D->id;
+		wxLogMessage("Select test tracking marker %s (%d) with %d points!", state->testing.markerTemplate3D->label, state->testing.markerTemplate3D->id, (int)state->testing.markerTemplate3D->points.size());
 	}
 }
 
@@ -505,13 +565,24 @@ void CameraFrame::Render()
 	}
 	else if (state->phase == PHASE_Calibration_Marker)
 	{
-		// TODO
+		visualizePoints2D(cam->camera, cam->undistorted2D, { 1, 1, 1 });
+		visualizeRays(cam->camera, state->testing.rays3D);
+		visualizeTriangulation(cam->camera, state->tracking.points3D, state->tracking.nonconflictedCount);
+		visualizePoints3D(cam->camera, state->markerCalib.markerPoints, { 0, 1, 0 }, 4, 0);
 	}
 	else if (state->phase == PHASE_Tracking)
 	{
 		visualizePoints2D(cam->camera, cam->undistorted2D, { 1, 1, 1 });
 		visualizeRays(cam->camera, state->testing.rays3D);
 		visualizePoses(cam->camera, state->tracking.poses3D, false);
+		visualizeTriangulation(cam->camera, state->tracking.points3D, state->tracking.nonconflictedCount);
+//		visualizePoints3D(cam->camera, state->testing.triangulatedPoints3D, {0,1,0}, 2.0f);
+	}
+	else if (state->phase == PHASE_Calibration_Marker)
+	{
+		visualizePoints2D(cam->camera, cam->undistorted2D, { 1, 1, 1 });
+		visualizeRays(cam->camera, state->testing.rays3D);
+//		visualizePoses(cam->camera, state->tracking.poses3D, false);
 		visualizeTriangulation(cam->camera, state->tracking.points3D, state->tracking.nonconflictedCount);
 //		visualizePoints3D(cam->camera, state->testing.triangulatedPoints3D, {0,1,0}, 2.0f);
 	}
@@ -731,7 +802,7 @@ static void ThreadSendTestData()
 			{ // Marker at origin
 				state->testing.GT = Eigen::Isometry3f::Identity();
 			}
-			else if (state->phase == PHASE_Tracking)
+			else if (state->phase == PHASE_Tracking || state->phase == PHASE_Calibration_Marker)
 			{ // Moving marker
 				// Generate consistent movement
 				TD += Eigen::Vector3f(
@@ -782,24 +853,17 @@ static void ThreadSendTestData()
 					for (int p = 0; p < camState->extrinsic.poses.size(); p++)
 					{ // Found marker pose using CV, check against GT (ground truth)
 						std::pair<float,float> poseError = calculatePoseError(state->testing.GT, camState->testing.camera.transform * camState->extrinsic.poses[p]);
-						float mse = camState->extrinsic.posesMSE[0];
-						wxLogMessage(L"Cam %d, Pose %d: MSE %.4fmpx, Error (%.4fmm, %.4f\u00B0)", m, p, mse*1000, poseError.first*10, poseError.second);
+						wxLogMessage(L"Cam %d, Pose %d: MSE %.4fmpx, Error (%.4fmm, %.4f\u00B0)", m, p, camState->extrinsic.posesMSE[0]*1000, poseError.first*10, poseError.second);
 					}
-
-					// Add origin for orientation
-					//camState->extrinsic.poses.push_back(Eigen::Isometry3f::Identity());
 				}
 			}
-			else if (state->phase == PHASE_Tracking)
+			else if (state->phase == PHASE_Tracking || state->phase == PHASE_Calibration_Marker)
 			{
 				// ----- Generate 3D Marker Data -----
 
 				// For testing of triangulation only
 				std::vector<int> visibleCount;
-				visibleCount.resize(state->tracking.markerTemplate3D->points.size());
-
-				if (state->tracking.markerTemplate3D->id >= 0) break; // Can't simulate, don't have DefMarker for it
-				DefMarker *markerDef = &host->m_config.testing.trackingMarkers[-state->tracking.markerTemplate3D->id-1];
+				visibleCount.resize(state->testing.markerTemplate3D->points.size());
 
 				for (int m = 0; m < state->cameras.size(); m++)
 				{
@@ -808,7 +872,7 @@ static void ThreadSendTestData()
 					// Project marker into camera view (simulated test data)
 					camState->points2D.clear();
 					camState->pointSizes.clear();
-					createMarkerProjection(camState->points2D, camState->pointSizes, camState->testing.markerPtsVisible, *markerDef, camState->testing.camera, state->testing.GT, state->testing.blobPxStdDev);
+					createMarkerProjection(camState->points2D, camState->pointSizes, camState->testing.markerPtsVisible, *state->testing.markerTemplate3D, camState->testing.camera, state->testing.GT, state->testing.blobPxStdDev);
 
 					// For testing only, accumulate by how many cameras a point is seen to determine if it is useful for triangulation
 					for (int i = 0; i < visibleCount.size(); i++)
@@ -822,56 +886,57 @@ static void ThreadSendTestData()
 
 				HandleCameraState(&host->m_globalState);
 
-				// ----- Pose Error Calculation and failure analysis -----
-
-				// Add 3D rays to shared list for visualization
-				state->testing.rays3D.clear();
-				for (int m = 0; m < state->cameras.size(); m++)
+				if (state->phase == PHASE_Tracking)
 				{
-					CameraState *camState = &state->cameras[m];
-					state->testing.rays3D.insert(state->testing.rays3D.end(), camState->tracking.rays3D.begin(), camState->tracking.rays3D.end());
-				}
+					// ----- Pose Error Calculation and failure analysis -----
 
-				// Gather points which could have been triangulated
-				std::bitset<MAX_MARKER_POINTS> triangulationMask;
-				for (int i = 0; i < visibleCount.size(); i++)
-					triangulationMask.set(i, visibleCount[i] >= 2);
-				state->testing.triangulatedPoints3D.clear();
-				transformMarkerPoints(state->testing.triangulatedPoints3D, triangulationMask, *state->tracking.markerTemplate3D, state->testing.GT);
-
-				// Handle detected pose
-				bool wrongPose = false;
-				if (state->tracking.poses3D.size() > 0)
-				{ // Determine pose error
-					for (int i = 0; i < state->tracking.poses3D.size(); i++)
+					// Add 3D rays to shared list for visualization
+					state->testing.rays3D.clear();
+					for (int m = 0; m < state->cameras.size(); m++)
 					{
-						std::pair<float,float> poseError = calculatePoseError(state->testing.GT, state->tracking.poses3D[i]);
-						std::pair<float,int> poseMSE = state->tracking.posesMSE[i];
-						wxLogMessage(L"Pose %d, Points: %d, MSE: %.4fmm, Error: (%.4fmm, %.4f\u00B0)", i, poseMSE.second, poseMSE.first*10, poseError.first*10, poseError.second);
-						if (poseError.first > 1 || poseError.second > 2)
-						{ // Pose is wrong
-							wxLogMessage("--> WRONG POSE: %d reference points", (int)state->testing.triangulatedPoints3D.size());
-							wrongPose = true;
+						CameraState *camState = &state->cameras[m];
+						state->testing.rays3D.insert(state->testing.rays3D.end(), camState->tracking.rays3D.begin(), camState->tracking.rays3D.end());
+					}
+
+					// Gather points which could have been triangulated
+					std::bitset<MAX_MARKER_POINTS> triangulationMask;
+					for (int i = 0; i < visibleCount.size(); i++)
+						triangulationMask.set(i, visibleCount[i] >= 2);
+					state->testing.triangulatedPoints3D.clear();
+					transformMarkerPoints(state->testing.triangulatedPoints3D, triangulationMask, *state->testing.markerTemplate3D, state->testing.GT);
+
+					// Handle detected pose
+					bool wrongPose = false;
+					if (state->tracking.poses3D.size() > 0)
+					{ // Determine pose error
+						for (int i = 0; i < state->tracking.poses3D.size(); i++)
+						{
+							std::pair<float,float> poseError = calculatePoseError(state->testing.GT, state->tracking.poses3D[i]);
+							std::pair<float,int> poseMSE = state->tracking.posesMSE[i];
+							wxLogMessage(L"Pose %d, Points: %d, MSE: %.4fmm, Error: (%.4fmm, %.4f\u00B0)", i, poseMSE.second, poseMSE.first*10, poseError.first*10, poseError.second);
+							if (poseError.first > 1 || poseError.second > 2)
+							{ // Pose is wrong
+								wxLogMessage("--> WRONG POSE: %d reference points", (int)state->testing.triangulatedPoints3D.size());
+								wrongPose = true;
+							}
 						}
 					}
-				}
-				else
-				{ // Pose is missing
-					wxLogMessage("--> NO POSE: %d reference points!", (int)state->testing.triangulatedPoints3D.size());
-					wrongPose = true;
-				}
+					else
+					{ // Pose is missing
+						wxLogMessage("--> NO POSE: %d reference points!", (int)state->testing.triangulatedPoints3D.size());
+						wrongPose = true;
+					}
 
-				static int times = 0;
-				if (wrongPose && times++ < 10)
-				{ // Debug circumstances using ground truth in case pose is wrong (or missing)
-					analyzeTrackingAlgorithm(visibleCount, triangulationMask, state->tracking.points3D, *state->tracking.markerTemplate3D, state->testing.GT);
-					// Interrupt a few times to allow for debugging
-					if (times < 5)
-						wxMessageOutput::Get()->Printf (wxT("Failed to detect pose!"));
+					static int times = 0;
+					if (wrongPose && times++ < 10)
+					{ // Debug circumstances using ground truth (assuming calibration is perfect) in case pose is wrong (or missing)
+						/*MarkerTemplate3D *markerTemplate = std::find_if(state->tracking.markerTemplates3D.begin(), state->tracking.markerTemplates3D.end(), [state](auto &m){ return m.id == state->testing.markerTemplate3D->id; })._Ptr;
+						analyzeTrackingAlgorithm(visibleCount, triangulationMask, state->tracking.points3D, *markerTemplate, state->testing.GT);*/
+						// Interrupt a few times to allow for debugging
+						if (times < 5)
+							wxMessageOutput::Get()->Printf (wxT("Failed to detect pose!"));
+					}
 				}
-
-				// Add origin for orientation
-				//state->tracking.poses3D.push_back(Eigen::Isometry3f::Identity());
 			}
 
 			// ----- Visualization -----

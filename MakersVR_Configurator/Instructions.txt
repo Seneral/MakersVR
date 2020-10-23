@@ -16,4 +16,7 @@ Requirements:
 3. Build MakersVR Configurator
 	In vcvars64 environment: "nmake -F build/Makefile.vc" (see .vscode/tasks.json)
 	Or if you use vscode, just execute the build task
-	Currently, only release works, seemingly due to some errors with the OpenCV build
+
+Notes on the build system:
+Both build and debug configurations work fine, using the respective builds of the libraries.
+However, the build system is not perfect, changing headers does NOT cause all the scripts relying on this header to recompile, which can result in odd behaviour as older objects read and write to memory which they should not. In that case, build/obj needs to be cleared to force a recompile.

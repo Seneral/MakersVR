@@ -53,8 +53,10 @@ void parseConfigFile(std::string path, Config *config)
 	if (cfg.contains("tracking"))
 	{
 		auto tracking = cfg["tracking"];
-		if (tracking.contains("intersectError"))
-			config->tracking.intersectError = tracking["intersectError"].get<float>();
+		if (tracking.contains("minIntersectError"))
+			config->tracking.minIntersectError = tracking["minIntersectError"].get<float>();
+		if (tracking.contains("maxIntersectError"))
+			config->tracking.maxIntersectError = tracking["maxIntersectError"].get<float>();
 		if (tracking.contains("sigmaError"))
 			config->tracking.sigmaError = tracking["sigmaError"].get<float>();
 	}
@@ -119,20 +121,20 @@ void parseConfigFile(std::string path, Config *config)
 				for (auto& cam : cameras) {
 					if (cam.is_object())
 					{
-						DefCamera camera = {};
+						Camera camera = {};
 						// Parse position
 						Eigen::Vector3f pos;
 						sscanf(cam["position"].get<std::string>().c_str(), "%f %f %f", &pos.x(), &pos.y(), &pos.z());
-						camera.pos = pos * 100; // m to cm
+						camera.transform.translation() = pos * 100; // m to cm
 						// Parse rotation
 						Eigen::Vector3f rotEA;
 						sscanf(cam["rotation"].get<std::string>().c_str(), "%f %f %f", &rotEA.x(), &rotEA.y(), &rotEA.z());
-						camera.rot = getRotationXYZ(rotEA / 180.0f * PI);
+						camera.transform.linear() = getRotationXYZ(rotEA / 180.0f * PI);
 						// Parse distortions
 						if (cam.contains("distortion") && cam["distortion"].is_string())
 						{
 							sscanf(cam["distortion"].get<std::string>().c_str(), "%f %f %f %f %f",
-								&camera.distortion[0], &camera.distortion[1], &camera.distortion[2], &camera.distortion[3], &camera.distortion[4]);
+								&camera.distortion.k1, &camera.distortion.k2, &camera.distortion.p1, &camera.distortion.p2, &camera.distortion.k3);
 						}
 						// Parse fov
 						if (cam.contains("fov"))
@@ -244,7 +246,7 @@ bool parseMarkerDataFile(std::string path, std::vector<DefMarker> &markers, int 
 /**
  * Parses the given calibration
  */
-void parseCalibrationFile(std::string path, std::vector<Camera> &cameraCalib)
+void parseCalibrationFile(std::string path, std::vector<Camera> &cameraCalib, std::vector<MarkerTemplate3D> &markerTemplates)
 {
 	// Read JSON config file
 	std::ifstream fs(path);
@@ -252,7 +254,7 @@ void parseCalibrationFile(std::string path, std::vector<Camera> &cameraCalib)
 	json calib;
 	fs >> calib;
 
-	// Parse JSON calib file
+	// Parse camera calibration
 	if (calib.contains("cameras"))
 	{
 		auto cameras = calib["cameras"];
@@ -305,20 +307,58 @@ void parseCalibrationFile(std::string path, std::vector<Camera> &cameraCalib)
 			}
 		}
 	}
+
+	// Parse marker calibration
+	if (calib.contains("markers"))
+	{
+		auto markers = calib["markers"];
+		if (markers.is_array())
+		{
+			markerTemplates.resize(markers.size());
+			int i = 0;
+			for (auto& marker : markers)
+			{
+				MarkerTemplate3D *mrk = &markerTemplates[i++];
+				if (marker.contains("id"))
+				{
+					mrk->id = marker["id"].get<int>();
+				}
+				if (marker.contains("points"))
+				{
+					auto points = marker["points"];
+					if (points.is_array())
+					{
+						mrk->points.resize(points.size());
+						int j = 0;
+						for (auto& point : points)
+						{
+							if (point.is_object())
+							{
+								mrk->points[j++] = Eigen::Vector3f(
+									point["x"].get<float>(),
+									point["y"].get<float>(),
+									point["z"].get<float>());
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 /**
  * Writes the given calibration to file
  */
-void writeCalibrationFile(std::string path, std::vector<Camera> &cameraCalib)
+void writeCalibrationFile(std::string path, const std::vector<Camera> &cameraCalib, const std::vector<MarkerTemplate3D> &markerTemplates)
 {
 	json calib;
 
-	// Write JSON calib file
+	// Write camera calibration
 	calib["cameras"] = json::array();
 	for (int c = 0; c < cameraCalib.size(); c++)
 	{
-		Camera *clb = &cameraCalib[c];
+		const Camera *clb = &cameraCalib[c];
 		json cam;
 		// Write intrinsic calibration
 		cam["fovH"] = clb->fovH;
@@ -341,7 +381,27 @@ void writeCalibrationFile(std::string path, std::vector<Camera> &cameraCalib)
 		calib["cameras"].push_back(cam);
 	}
 
-	// Write JSON config file
+	// Write marker calibration
+	calib["markers"] = json::array();
+	for (int m = 0; m < markerTemplates.size(); m++)
+	{
+		const MarkerTemplate3D *mrk = &markerTemplates[m];
+		json marker;
+		marker["id"] = mrk->id;
+		// Write points
+		marker["points"] = json::array();
+		for (int p = 0; p < mrk->points.size(); p++)
+		{
+			json point;
+			point["x"] = mrk->points[p].x();
+			point["y"] = mrk->points[p].y();
+			point["z"] = mrk->points[p].z();
+			marker["points"].push_back(point);
+		}
+		calib["markers"].push_back(marker);
+	}
+
+	// Write JSON calib file
 	std::ofstream fs(path);
 	if (!fs.is_open()) return;
 	fs << std::setw(4) << calib;

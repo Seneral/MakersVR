@@ -9,6 +9,8 @@
 
 #include "eigenutil.hpp"
 
+#include "tracking.hpp"
+
 #include <vector>
 #include <string>
 
@@ -31,15 +33,6 @@ struct DefMarker
 	std::vector<DefMarkerPoint> points;
 };
 
-struct DefCamera
-{
-	std::string label;
-	Eigen::Vector3f pos;
-	Eigen::Matrix3f rot;
-	float distortion[5];
-	float fovH, fovV;
-};
-
 struct Config
 {
 	struct {
@@ -48,13 +41,14 @@ struct Config
 		int cameraFramerate;
 	} mode;
 	struct {
-		float intersectError;
+		float minIntersectError;
+		float maxIntersectError;
 		float sigmaError;
 	} tracking;
 	struct {
 		std::vector<DefMarker> calibrationMarkers;
 		std::vector<DefMarker> trackingMarkers;
-		std::vector<DefCamera> cameraDefinitions;
+		std::vector<Camera> cameraDefinitions;
 		float blobPxStdDev;
 	} testing;
 };
@@ -77,11 +71,11 @@ bool parseMarkerDataFile(std::string path, std::vector<DefMarker> &markers, int 
 /**
  * Parses the given calibration
  */
-void parseCalibrationFile(std::string path, std::vector<Camera> &cameraCalib);
+void parseCalibrationFile(std::string path, std::vector<Camera> &cameraCalib, std::vector<MarkerTemplate3D> &markerTemplates);
 
 /**
  * Writes the given calibration to file
  */
-void writeCalibrationFile(std::string path, std::vector<Camera> &cameraCalib);
+void writeCalibrationFile(std::string path, const std::vector<Camera> &cameraCalib, const std::vector<MarkerTemplate3D> &markerTemplates);
 
 #endif // UTIL_H

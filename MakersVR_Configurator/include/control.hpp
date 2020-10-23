@@ -99,40 +99,54 @@ struct TrackingState
 	} calibration;
 	struct { // Multi-Camera state (Tracking)
 		std::vector<MarkerTemplate3D> markerTemplates3D;
-		MarkerTemplate3D *markerTemplate3D;
+		int trackID; // ID of currently tracked marker
 		float sigmaError;
-		float intersectError;
+		float minIntersectError;
+		float maxIntersectError;
 		std::vector<TriangulatedPoint> points3D;
 		int nonconflictedCount;
 		std::vector<std::vector<int>> conflicts;
 		std::vector<Eigen::Isometry3f> poses3D;
 		std::vector<std::pair<float,int>> posesMSE;
 	} tracking;
+	struct { // Marker Calibration state
+		MarkerTemplate3D iterativeMarker;
+		int iteration;
+		std::vector<Eigen::Vector3f> markerPoints;
+		std::vector<std::pair<float, int>> markerPointRating;
+	} markerCalib;
 	struct { // Testing and visualization state
+		bool isTesting;
 		Eigen::Isometry3f targetPose;
 		Eigen::Isometry3f GT;
 		std::vector<Ray> rays3D;
 		std::vector<Eigen::Vector3f> triangulatedPoints3D;
 		float blobPxStdDev;
+		DefMarker *markerTemplate3D;
 	} testing;
 };
 
 /* Functions */
 
 /**
- * Finalizes the current phase and returns to idle phase
+ * Finalize the current phase and return to the idle phase
  */
 void FinalizePhase(TrackingState *state);
 
 /**
- * Enters the next phase after last has been finalized
+ * Discard the current phase and return to the idle phase
  */
-void NextPhase(TrackingState *state);
+void DiscardPhase(TrackingState *state);
 
 /**
- * Enters the specified phase after last one has been finalized
+ * Enters the specified phase from the idle phase
  */
 void EnterPhase(TrackingState *state, ControlPhase phase);
+
+/**
+ * Enters the next phase, discarding any unfinalized current phases
+ */
+void NextPhase(TrackingState *state);
 
 /**
  * Handles a new frame
