@@ -113,20 +113,20 @@ void createMarkerProjection(std::vector<Eigen::Vector2f> &points2D, std::vector<
 /**
  * Transforms marker points based on translation and rotation
  */
-void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const MarkerTemplate3D &marker3D, const Eigen::Isometry3f &transform)
+void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const DefMarker &marker3D, const Eigen::Isometry3f &transform)
 {
 	points3D.reserve(points3D.size() + marker3D.points.size());
 	for (int i = 0; i < marker3D.points.size(); i++)
 	{
 		if (!mask[i]) continue;
-		points3D.push_back(transform * marker3D.points[i]);
+		points3D.push_back(transform * marker3D.points[i].pos);
 	}
 }
 
 /**
  * Analyze possibility of tracking algorithm to extract the pose based on ground truth data
  */
-void analyzeTrackingAlgorithm(const std::vector<int> &visibleCount, const std::bitset<MAX_MARKER_POINTS> &triangulationMask, const std::vector<TriangulatedPoint> &points3D, const MarkerTemplate3D marker3D, Eigen::Isometry3f gt)
+void analyzeTrackingAlgorithm(const std::vector<int> &visibleCount, const std::bitset<MAX_MARKER_POINTS> &triangulationMask, const std::vector<TriangulatedPoint> &points3D, const MarkerTemplate3D &marker3D, Eigen::Isometry3f gt)
 {
 	// Analyze with knowledge which triangulated points could be used for the marker detection
 	std::vector<int> relationMask;

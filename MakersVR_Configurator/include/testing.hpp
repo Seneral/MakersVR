@@ -48,12 +48,12 @@ void createMarkerProjection(std::vector<Eigen::Vector2f> &points2D, std::vector<
 /**
  * Transforms marker points based on translation and rotation
  */
-void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const MarkerTemplate3D &marker3D, const Eigen::Isometry3f &transform);
+void transformMarkerPoints(std::vector<Eigen::Vector3f> &points3D, const std::bitset<MAX_MARKER_POINTS> &mask, const DefMarker &marker3D, const Eigen::Isometry3f &transform);
 
 /**
  * Analyze possibility of tracking algorithm to extract the pose based on ground truth data
  */
-void analyzeTrackingAlgorithm(const std::vector<int> &visibleCount, const std::bitset<MAX_MARKER_POINTS> &triangulationMask, const std::vector<TriangulatedPoint> &points3D, const MarkerTemplate3D marker3D, Eigen::Isometry3f gt);
+void analyzeTrackingAlgorithm(const std::vector<int> &visibleCount, const std::bitset<MAX_MARKER_POINTS> &triangulationMask, const std::vector<TriangulatedPoint> &points3D, const MarkerTemplate3D &marker3D, Eigen::Isometry3f gt);
 
 /**
  * Visualize 2D points in pixel space

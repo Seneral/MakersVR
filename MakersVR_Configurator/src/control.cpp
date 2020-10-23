@@ -8,6 +8,33 @@
 
 #include "wxbase.hpp" // wxLog*
 
+
+static void InitCalibrationIntrinsic(TrackingState *state);
+static void FinalizeCalibrationIntrinsic(TrackingState *state);
+static void DiscardCalibrationIntrinsic(TrackingState *state);
+
+static void InitCalibrationExtrinsic(TrackingState *state);
+static void FinalizeCalibrationExtrinsic(TrackingState *state);
+static void DiscardCalibrationExtrinsic(TrackingState *state);
+
+static void InitCalibrationRoom(TrackingState *state);
+static void FinalizeCalibrationRoom(TrackingState *state);
+static void DiscardCalibrationRoom(TrackingState *state);
+
+static void InitCalibrationMarker(TrackingState *state);
+static void FinalizeCalibrationMarker(TrackingState *state);
+static void DiscardCalibrationMarker(TrackingState *state);
+
+static void UpdateTrackedCalibrationMarker(TrackingState *state);
+static void UpdateCameraRelationCandidates(TrackingState *state);
+static void UpdateRoomOriginCandidates(TrackingState *state);
+static void UpdateIntrinsicCalibration(TrackingState *state);
+static void UpdateCalibratedMarkerTemplate(TrackingState *state);
+
+static void TrackMarkers(TrackingState *state);
+
+static void UndistortPoints(TrackingState *state);
+
 static void CalibrationThreadFunction(TrackingState *state, CameraState *cam);
 
 static void InitCalibrationIntrinsic(TrackingState *state)
@@ -59,13 +86,20 @@ static void FinalizeCalibrationIntrinsic(TrackingState *state)
 	}
 }
 
-static void InitCalibrationExtrinsic(TrackingState *state)
+static void DiscardCalibrationIntrinsic(TrackingState *state)
 {
 	for (int m = 0; m < state->cameras.size(); m++)
 	{
 		CameraState *cam = &state->cameras[m];
-		cam->extrinsic.relations.resize(state->cameras.size());
+		cam->intrinsic.markerRadialLookup.clear();
+		cam->intrinsic.markerGridBuckets.clear();
 	}
+}
+
+static void InitCalibrationExtrinsic(TrackingState *state)
+{
+	for (int m = 0; m < state->cameras.size(); m++)
+		state->cameras[m].extrinsic.relations.resize(state->cameras.size());
 	
 	// Reserve for maximum amount of possible relations, to preserve pointers
 	// This estimate of the binominal coefficient (n^k / k!) is excellent for small k (here k=2)
@@ -100,13 +134,17 @@ static void FinalizeCalibrationExtrinsic(TrackingState *state)
 	}
 }
 
+static void DiscardCalibrationExtrinsic(TrackingState *state)
+{
+	state->calibration.relations.clear();
+	for (int m = 0; m < state->cameras.size(); m++)
+		state->cameras[m].extrinsic.relations.clear();
+}
+
 static void InitCalibrationRoom(TrackingState *state)
 {
 	for (int m = 0; m < state->cameras.size(); m++)
-	{
-		CameraState *cam = &state->cameras[m];
-		cam->extrinsic.originCandidates.clear();
-	}
+		state->cameras[m].extrinsic.originCandidates.clear();
 }
 
 static void FinalizeCalibrationRoom(TrackingState *state)
@@ -137,6 +175,11 @@ static void FinalizeCalibrationRoom(TrackingState *state)
 	for (int m = 0; m < state->cameras.size(); m++)
 		state->cameras[m].camera.transform = cameraTransforms[m];
 
+	// Clear
+	state->calibration.relations.clear();
+	for (int m = 0; m < state->cameras.size(); m++)
+		state->cameras[m].extrinsic.relations.clear();
+
 	for (int m = 0; m < state->cameras.size(); m++)
 	{ // Debug
 		Eigen::Isometry3f cameraTransform = cameraTransforms[m];
@@ -148,48 +191,181 @@ static void FinalizeCalibrationRoom(TrackingState *state)
 	}
 }
 
-/**
- * Finalize the current phase and return to idle phase
- */
-void FinalizePhase(TrackingState *state)
+static void DiscardCalibrationRoom(TrackingState *state)
 {
-	if (state->phase != PHASE_None)
-	{ // Finalize current phase
-		bool writeCalibration = false;
-		if (state->phase == PHASE_Calibration_Intrinsic)
-		{
-			FinalizeCalibrationIntrinsic(state);
-			writeCalibration = true;
-		}
-		else if (state->phase == PHASE_Calibration_Extrinsic)
-		{
-			FinalizeCalibrationExtrinsic(state);
-		}
-		else if (state->phase == PHASE_Calibration_Room)
-		{
-			FinalizeCalibrationRoom(state);
-			writeCalibration = true;
-		}
-		// Write results of last phase
-		if (writeCalibration)
-		{
-			std::vector<Camera> cameraCalibrations(state->cameras.size());
-			for (int i = 0; i < state->cameras.size(); i++)
-				cameraCalibrations[i] = state->cameras[i].camera;
-			writeCalibrationFile("config/calib.json", cameraCalibrations);
-		}
-		// Advance phase
-		state->lastPhase = state->phase;
-		state->phase = PHASE_None;
+	state->calibration.relations.clear();
+	for (int m = 0; m < state->cameras.size(); m++)
+	{
+		CameraState *cam = &state->cameras[m];
+		cam->extrinsic.relations.clear();
+		cam->extrinsic.originCandidates.clear();
 	}
 }
 
+static void InitCalibrationMarker(TrackingState *state)
+{
+	state->markerCalib.iteration = 0;
+	state->markerCalib.iterativeMarker.points.clear();
+	state->markerCalib.iterativeMarker.pointRelation.clear();
+	state->markerCalib.iterativeMarker.relationDist.clear();
+	state->markerCalib.markerPoints.clear();
+	state->markerCalib.markerPointRating.clear();
+}
+
+static void FinalizeCalibrationMarker(TrackingState *state)
+{
+	// Remove points with lower confidence
+	float maxConfidence = std::max_element(state->markerCalib.markerPointRating.begin(), state->markerCalib.markerPointRating.end(), [](auto &a, auto &b){ return a.first < b.first; })->first;
+	for (int i = 0; i < state->markerCalib.markerPoints.size(); i++)
+	{
+		auto &ptRating = state->markerCalib.markerPointRating[i];
+		if (ptRating.first < maxConfidence/10.0f)
+		{ // Confidence lower than 1/10 of best point
+			wxLogMessage("Removed old point %d with confidence %.4f < %.4f!", i, ptRating.first, maxConfidence/10.0f);
+			state->markerCalib.markerPoints[i] = state->markerCalib.markerPoints.back();
+			state->markerCalib.markerPoints.pop_back();
+			state->markerCalib.markerPointRating[i] = state->markerCalib.markerPointRating.back();
+			state->markerCalib.markerPointRating.pop_back();
+		}
+	}
+
+	// Center marker around center of mass
+	Eigen::Vector3f COM = Eigen::Vector3f::Zero();
+	for (int i = 0; i < state->markerCalib.markerPoints.size(); i++)
+		COM += state->markerCalib.markerPoints[i] / state->markerCalib.markerPoints.size();
+	for (int i = 0; i < state->markerCalib.markerPoints.size(); i++)
+		state->markerCalib.markerPoints[i] -= COM;
+
+	// TODO: Proper identity transform calibration step
+
+	// Find max occupied marker id (excluding testing markers because they are negative)
+	int maxID = -1;
+	for (int i = 0; i < state->tracking.markerTemplates3D.size(); i++)
+		maxID = std::max(maxID, state->tracking.markerTemplates3D[i].id);
+
+	// Add marker with new ID to templates
+	state->tracking.markerTemplates3D.push_back({});
+	MarkerTemplate3D *marker = &state->tracking.markerTemplates3D[state->tracking.markerTemplates3D.size()-1];
+	marker->id = maxID+1;
+	marker->label = std::string("Marker ID ") + (char)((int)'0' + marker->id);
+	marker->points.resize(state->markerCalib.markerPoints.size());
+	std::copy(state->markerCalib.markerPoints.begin(), state->markerCalib.markerPoints.end(), marker->points.begin());
+	generateLookupTables(marker);
+}
+
+static void DiscardCalibrationMarker(TrackingState *state)
+{
+	state->markerCalib.iterativeMarker.points.clear();
+	state->markerCalib.iterativeMarker.pointRelation.clear();
+	state->markerCalib.iterativeMarker.relationDist.clear();
+	state->markerCalib.markerPoints.clear();
+	state->markerCalib.markerPointRating.clear();
+}
+
 /**
- * Enters the next phase after last has been finalized
+ * Finalize the current phase and return to the idle phase
+ */
+void FinalizePhase(TrackingState *state)
+{
+	if (state->phase == PHASE_None) return;
+
+	// Finalize current phase
+	bool writeCalibration = false;
+	if (state->phase == PHASE_Calibration_Intrinsic)
+	{
+		FinalizeCalibrationIntrinsic(state);
+		writeCalibration = true;
+	}
+	else if (state->phase == PHASE_Calibration_Extrinsic)
+	{
+		FinalizeCalibrationExtrinsic(state);
+	}
+	else if (state->phase == PHASE_Calibration_Room)
+	{
+		FinalizeCalibrationRoom(state);
+		writeCalibration = true;
+	}
+	else if (state->phase == PHASE_Calibration_Marker)
+	{
+		FinalizeCalibrationMarker(state);
+		writeCalibration = true;
+	}
+
+	// Write results of current phase
+	if (writeCalibration)
+	{
+		std::vector<Camera> cameraCalibrations(state->cameras.size());
+		for (int i = 0; i < state->cameras.size(); i++)
+			cameraCalibrations[i] = state->cameras[i].camera;
+		std::vector<MarkerTemplate3D> markerTemplates;
+		markerTemplates.reserve(state->tracking.markerTemplates3D.size());
+		for (int i = 0; i < state->tracking.markerTemplates3D.size(); i++)
+			if (state->tracking.markerTemplates3D[i].id >= 0)
+				markerTemplates.push_back(state->tracking.markerTemplates3D[i]);
+		writeCalibrationFile("config/calib.json", cameraCalibrations, markerTemplates);
+	}
+
+	// Return to idle phase
+	state->lastPhase = state->phase;
+	state->phase = PHASE_None;
+}
+
+/**
+ * Discard the current phase and return to the idle phase
+ */
+void DiscardPhase(TrackingState *state)
+{
+	if (state->phase == PHASE_None)
+		return;
+
+	// Init next phase
+	if (state->phase == PHASE_Calibration_Intrinsic)
+		DiscardCalibrationIntrinsic(state);
+	else if (state->phase == PHASE_Calibration_Extrinsic)
+		DiscardCalibrationExtrinsic(state);
+	else if (state->phase == PHASE_Calibration_Room)
+		DiscardCalibrationRoom(state);
+	else if (state->phase == PHASE_Calibration_Marker)
+		DiscardCalibrationMarker(state);
+
+	// Return to idle phase
+	state->lastPhase = state->phase;
+	state->phase = PHASE_None;
+}
+
+/**
+ * Enters the specified phase from the idle phase
+ */
+void EnterPhase(TrackingState *state, ControlPhase phase)
+{
+	if (state->phase != PHASE_None)
+	{
+		wxLogError("Already in a phase!");
+		return;
+	}
+
+	// Enter phase
+	state->lastPhase = state->phase;
+	state->phase = phase;
+
+	// Init phase
+	if (phase == PHASE_Calibration_Intrinsic)
+		InitCalibrationIntrinsic(state);
+	else if (phase == PHASE_Calibration_Extrinsic)
+		InitCalibrationExtrinsic(state);
+	else if (phase == PHASE_Calibration_Room)
+		InitCalibrationRoom(state);
+	else if (phase == PHASE_Calibration_Marker)
+		InitCalibrationMarker(state);
+}
+
+
+/**
+ * Enters the next phase, discarding any unfinalized current phases
  */
 void NextPhase(TrackingState *state)
 {
-	if (state->lastPhase == PHASE_Tracking)
+	if (state->lastPhase == PHASE_Tracking || state->phase == PHASE_Tracking)
 	{
 		wxLogError("Tracking is final phase!");
 		return;
@@ -197,38 +373,15 @@ void NextPhase(TrackingState *state)
 	if (state->phase != PHASE_None)
 	{
 		wxLogError("Discarding unfinalized last phase!");
-		EnterPhase(state, (ControlPhase)((int)state->phase + 1));
+		DiscardPhase(state);
 	}
-	else
-		EnterPhase(state, (ControlPhase)((int)state->lastPhase + 1));
+	ControlPhase targetPhase = (ControlPhase)((int)state->lastPhase + 1);
+	// Skip room calibration phase if extrinsic phase was discarded (either here or explicitly)
+	if (state->lastPhase == PHASE_Calibration_Extrinsic && state->calibration.relations.size() == 0)
+		targetPhase = (ControlPhase)((int)state->lastPhase + 2);
+	EnterPhase(state, targetPhase);
 }
 
-/**
- * Enters the specified phase after last one has been finalized
- */
-void EnterPhase(TrackingState *state, ControlPhase phase)
-{
-	if (state->phase == phase)
-	{
-		wxLogError("Already in desired phase!");
-		return;
-	}
-	if (state->phase != PHASE_None)
-	{
-		wxLogError("Discarding unfinalized last phase!");
-	}
-	// Enter next phase
-	state->lastPhase = state->phase;
-	state->phase = phase;
-	// Init next phase
-	if (phase == PHASE_Calibration_Intrinsic)
-		InitCalibrationIntrinsic(state);
-	else if (phase == PHASE_Calibration_Extrinsic)
-		InitCalibrationExtrinsic(state);
-	else if (phase == PHASE_Calibration_Room)
-		InitCalibrationRoom(state);
-
-}
 
 static void UpdateTrackedCalibrationMarker(TrackingState *state)
 {
@@ -386,17 +539,6 @@ static void UpdateRoomOriginCandidates(TrackingState *state)
 	}
 }
 
-/**
- * Executes calibration and then exits
- */
-static void CalibrationThreadFunction(TrackingState *state, CameraState *cam)
-{
-	cam->intrinsic.calibrationRunning = true;
-	cam->intrinsic.calibrationFinished = false;
-	calculateIntrinsicCalibration(cam->camera, cam->intrinsic.calibrationSelection, *state->calibration.markerTemplate2D, cam->intrinsic.calibrationMarkerErrors);
-	cam->intrinsic.calibrationFinished = true;
-}
-
 static void UpdateIntrinsicCalibration(TrackingState *state)
 {
 	for (int m = 0; m < state->cameras.size(); m++)
@@ -472,6 +614,187 @@ static void UpdateIntrinsicCalibration(TrackingState *state)
 	}
 }
 
+static void UpdateCalibratedMarkerTemplate(TrackingState *state)
+{
+	// Create 3D Rays for triangulation assuming calibrated camera
+	for (int m = 0; m < state->cameras.size(); m++)
+	{
+		CameraState *cam = &state->cameras[m];
+		cam->tracking.rays3D.clear();
+		castRays(cam->undistorted2D, cam->camera, cam->tracking.rays3D);
+	}
+
+	// Perform triangulation using 3D Rays
+	std::vector<std::vector<Ray>*> rayGroups;
+	for (int m = 0; m < state->cameras.size(); m++)
+		rayGroups.push_back(&state->cameras[m].tracking.rays3D);
+	state->tracking.points3D.clear();
+	state->tracking.conflicts.clear();
+	state->tracking.nonconflictedCount = triangulateRayIntersections(rayGroups, state->tracking.points3D, state->tracking.conflicts, state->tracking.maxIntersectError, state->tracking.minIntersectError);
+
+	static Eigen::Isometry3f originalGT;
+
+	auto updateIterativeMarkerTemplate = [&state]()
+	{
+		state->markerCalib.iterativeMarker.id = -1;
+		state->markerCalib.iterativeMarker.points.resize(state->markerCalib.markerPoints.size());
+		std::copy(state->markerCalib.markerPoints.begin(), state->markerCalib.markerPoints.end(), state->markerCalib.iterativeMarker.points.begin());
+		generateLookupTables(&state->markerCalib.iterativeMarker);
+	};
+
+	if (state->markerCalib.markerPoints.size() == 0)
+	{ // Add initial marker points
+		if (state->tracking.nonconflictedCount > 4)
+		{
+			state->markerCalib.markerPoints.reserve(state->tracking.points3D.size());
+			state->markerCalib.markerPointRating.reserve(state->tracking.points3D.size());
+			for (int i = 0; i < state->tracking.points3D.size(); i++)
+			{
+				state->markerCalib.markerPoints.push_back(state->tracking.points3D[i].pos);
+				state->markerCalib.markerPointRating.push_back({ state->tracking.points3D[i].confidence/state->tracking.points3D[i].error, 0 });
+			}
+			updateIterativeMarkerTemplate();
+			originalGT = state->testing.GT;
+		}
+	}
+	else
+	{ // Iteratively add and improve marker points
+
+		// Detect match using iterative marker template
+		std::vector<MarkerCandidate3D> candidates;
+		detectMarker3D(&state->markerCalib.iterativeMarker, state->tracking.points3D, state->tracking.conflicts, state->tracking.nonconflictedCount, candidates, state->tracking.sigmaError*2); // Double error because both point clouds introduce uncertainty
+
+		// Get the best candidate and make sure it's a good match
+		std::tuple<int,float,int> bestCand = getBestMarkerCandidate(&state->markerCalib.iterativeMarker, state->tracking.points3D, state->tracking.conflicts, state->tracking.nonconflictedCount, candidates);
+		int bestCandIndex = std::get<0>(bestCand);
+		MarkerCandidate3D *candidate = &candidates[bestCandIndex];
+		int bestCandCount = std::get<2>(bestCand);
+		int bestCandPtCnt = candidate->points.size();
+		float bestCandMSE = std::get<1>(bestCand);
+		if (bestCandPtCnt < 4)
+		{
+			wxLogMessage("Best candidate has only %d points!", bestCandPtCnt);
+			return;
+		}
+		if (bestCandCount > 1)
+		{
+			wxLogMessage("Found %d best markers with %d points!", bestCandCount, bestCandPtCnt);
+			return;
+		}
+
+		// Log
+		wxLogMessage("Iteration %d: %d marker points; %d matches; Best: %d points, MSE %.4fmpx", state->markerCalib.iteration, (int)state->markerCalib.markerPoints.size(), (int)candidates.size(), (int)candidates[bestCandIndex].points.size(), bestCandMSE*1000);
+		if (state->testing.isTesting)
+		{ // Debug
+			auto poseError = calculatePoseError(candidate->pose * originalGT, state->testing.GT);
+			wxLogMessage("Ground truth error (%.4fmm, %.4f\u00B0)", poseError.first*10, poseError.second);
+		}
+
+		auto mergeMarkerPoints = [&state](MarkerCandidate3D *candidate, int mkPt, const TriangulatedPoint &matchPt)
+		{
+			float matchConfidence = matchPt.confidence / matchPt.error;
+			state->markerCalib.markerPointRating[mkPt].first += matchConfidence;
+			float lerp = matchConfidence / state->markerCalib.markerPointRating[mkPt].first;
+			Eigen::Vector3f trPos = candidate->pose.inverse() * matchPt.pos;
+			Eigen::Vector3f diff = trPos - state->markerCalib.markerPoints[mkPt];
+			state->markerCalib.markerPoints[mkPt] += diff * lerp;
+		};
+
+		// Add new points and improve existing matched marker points
+		state->markerCalib.iteration++;
+		int mergeCnt = 0;
+		for (int i = 0; i < candidate->pointMap.size(); i++)
+		{
+			int mkPt = candidate->pointMap[i];
+			if (mkPt == -1)
+			{ // No match for point
+				if (i < state->tracking.nonconflictedCount)
+				{ // Add only unconflicted points to marker
+					// Check if any points are closeby which were missed
+					float closestPoint = 9999.9f;
+					int closestIndex = -1;
+					for (int j = 0; j < state->markerCalib.markerPoints.size(); j++)
+					{
+						float dist = (state->markerCalib.markerPoints[j] - candidate->pose.inverse() * state->tracking.points3D[i].pos).norm();
+						if (dist < closestPoint)
+						{
+							closestPoint = dist;
+							closestIndex = j;
+						}
+					}
+					if (closestPoint < 0.5f) // 5mm
+						wxLogMessage("Found unconflicted point, but closest marker point was only %.4fcm away!", closestPoint);
+					else
+					{
+						state->markerCalib.markerPoints.push_back(candidate->pose.inverse() * state->tracking.points3D[i].pos);
+						state->markerCalib.markerPointRating.push_back({ state->tracking.points3D[i].confidence / state->tracking.points3D[i].error, state->markerCalib.iteration });
+						wxLogMessage("Found new unconflicted point, total of %d points now - closest point was %.4fcm!", (int)state->markerCalib.markerPoints.size(), closestPoint);
+					}
+				}
+			}
+			else
+			{ // Reinforce matched points
+				mergeMarkerPoints(candidate, mkPt, state->tracking.points3D[i]);
+				mergeCnt++;
+			}
+		}
+		wxLogMessage("Reinforced %d points!", mergeCnt);
+
+		// Remove points with lower confidence while giving new points that are consistent a chance to grow confidence
+		float maxConfidence = std::max_element(state->markerCalib.markerPointRating.begin(), state->markerCalib.markerPointRating.end(), [](auto &a, auto &b){ return a.first < b.first; })->first;
+		for (int i = 0; i < state->markerCalib.markerPoints.size(); i++)
+		{
+			auto &ptRating = state->markerCalib.markerPointRating[i];
+			if (ptRating.first < maxConfidence/10.0f)
+			{ // Confidence lower than 1/10 of best point
+				float avg = ptRating.first / (state->markerCalib.iteration - ptRating.second);
+				float bestAvg = maxConfidence/state->markerCalib.iteration;
+				if (avg < bestAvg/2)
+				{ // Average confidence since first appearance not significant compared to (approx) average confidence of best point 
+					wxLogMessage("Removed old point %d with confidence %.4f < %.4f and average %.4f < %.4f!", i, ptRating.first, maxConfidence/10.0f, avg, bestAvg/2);
+					state->markerCalib.markerPoints[i] = state->markerCalib.markerPoints.back();
+					state->markerCalib.markerPoints.pop_back();
+					state->markerCalib.markerPointRating[i] = state->markerCalib.markerPointRating.back();
+					state->markerCalib.markerPointRating.pop_back();
+				}
+			}
+		}
+
+		updateIterativeMarkerTemplate();
+
+		if (state->testing.isTesting)
+		{ // Debug
+
+			// Set ground truth marker as point cloud
+			std::vector<TriangulatedPoint> pointCloud;
+			pointCloud.reserve(state->testing.markerTemplate3D->points.size());
+			for (int i = 0; i < state->testing.markerTemplate3D->points.size(); i++)
+				pointCloud.push_back({  state->testing.markerTemplate3D->points[i].pos, state->tracking.maxIntersectError, 1 });
+
+			// Detect match using iterative marker template
+			std::vector<MarkerCandidate3D> checkCandidates;
+			detectMarker3D(&state->markerCalib.iterativeMarker, pointCloud, {}, pointCloud.size(), checkCandidates, state->tracking.sigmaError*2, false);
+
+			// Pick best match
+			std::tuple<int,float,int> checkCand = getBestMarkerCandidate(&state->markerCalib.iterativeMarker, pointCloud, {}, pointCloud.size(), checkCandidates);
+			MarkerCandidate3D *checkCandidate = &checkCandidates[std::get<0>(checkCand)];
+			int checkCandPtCnt = checkCandidate->points.size();
+
+			// Log match with actual marker
+			auto poseError = calculatePoseError(checkCandidate->pose, originalGT);
+			wxLogMessage("Marker points: %d candidates; %d matched, %d missing, %d excess; MSE %.4fmpx, Error (%.4fmm, %.4f\u00B0)", (int)checkCandidates.size(), checkCandPtCnt, (int)(pointCloud.size() - checkCandPtCnt), (int)(state->markerCalib.markerPoints.size() - checkCandPtCnt), std::get<1>(checkCand)*1000, poseError.first*10, poseError.second);
+
+			/*for (int i = 0; i < pointCloud.size(); i++)
+			{
+				if (checkCandidate->pointMap[i] < 0) continue;
+				float error = (pointCloud[i].pos - checkCandidate->pose * markerTemplate->points[checkCandidate->pointMap[i]]).norm();
+				wxLogMessage("Mapping %d -> %d with error %.2fmm", i, checkCandidate->pointMap[i], error*10);
+			}*/
+		}
+	}
+
+}
+
 static void TrackMarkers(TrackingState *state)
 {
 	// Create 3D Rays for triangulation assuming calibrated camera
@@ -488,12 +811,23 @@ static void TrackMarkers(TrackingState *state)
 		rayGroups.push_back(&state->cameras[m].tracking.rays3D);
 	state->tracking.points3D.clear();
 	state->tracking.conflicts.clear();
-	state->tracking.nonconflictedCount = triangulateRayIntersections(rayGroups, state->tracking.points3D, state->tracking.conflicts, state->tracking.intersectError);
+	state->tracking.nonconflictedCount = triangulateRayIntersections(rayGroups, state->tracking.points3D, state->tracking.conflicts, state->tracking.maxIntersectError, state->tracking.minIntersectError);
+
+	// TODO: Split point cloud into groups and assign marker templates expected in that point cloud
 
 	// Detect markers in triangulated point cloud
 	state->tracking.poses3D.clear();
 	state->tracking.posesMSE.clear();
-	detectMarkers3D(state->tracking.markerTemplate3D, state->tracking.points3D, state->tracking.conflicts, state->tracking.nonconflictedCount, state->tracking.poses3D, state->tracking.posesMSE, state->tracking.sigmaError);
+	auto markerTemplate = std::find_if(state->tracking.markerTemplates3D.begin(), state->tracking.markerTemplates3D.end(), [state](auto &m){ return m.id == state->tracking.trackID; });
+	if (markerTemplate != state->tracking.markerTemplates3D.end())
+	{ // TODO: Replace with expected marker after initial detection
+		auto pose = detectMarker3D(markerTemplate._Ptr, state->tracking.points3D, state->tracking.conflicts, state->tracking.nonconflictedCount, state->tracking.sigmaError);
+		if (std::get<2>(pose) > 0)
+		{ // Found a pose
+			state->tracking.poses3D.push_back(std::get<0>(pose));
+			state->tracking.posesMSE.push_back({ std::get<1>(pose), std::get<2>(pose) });
+		}
+	}
 }
 
 static void UndistortPoints(TrackingState *state)
@@ -540,4 +874,24 @@ void HandleCameraState(TrackingState *state)
 			UpdateRoomOriginCandidates(state);
 		}
 	}
+	else if (state->phase == PHASE_Calibration_Marker)
+	{
+		// Undistort points using calibrated camera
+		UndistortPoints(state);
+
+		// Triangulate point cloud and improve current marker template
+		UpdateCalibratedMarkerTemplate(state);
+	}
+}
+
+
+/**
+ * Executes calibration and then exits
+ */
+static void CalibrationThreadFunction(TrackingState *state, CameraState *cam)
+{
+	cam->intrinsic.calibrationRunning = true;
+	cam->intrinsic.calibrationFinished = false;
+	calculateIntrinsicCalibration(cam->camera, cam->intrinsic.calibrationSelection, *state->calibration.markerTemplate2D, cam->intrinsic.calibrationMarkerErrors);
+	cam->intrinsic.calibrationFinished = true;
 }
