@@ -24,25 +24,15 @@
 #include "usbd.h"
 
 #define UART_BAUD_RATE			115200	// 57600
-#define UART_PACKET_TIMEOUT		5000									// in ms
 #define UART_TX_TIMEOUT			(10 * 72000000 / UART_BAUD_RATE)	// Wait 10 bauds to be sure
 #define UART_RX_BUFFER_SIZE		512
 #define UART_RX_BUFFER_SPACE	16									// Space for usb header to be prepended
+#define UART_PING_INTERVAL		1000								// Interval in which marker detectors are pinged
+#define UART_COMM_TIMEOUT		5000								// Comm timeout at which connection is reset
+#define USB_WRITE_BUFFER_TIME	10									// Estimate of how many us we need to write USB buffer
 
-/* Variables */
-uint32_t msCounter = 0;
 
-// Debug
-#ifdef DEBUG
-uint_fast16_t debugPos = 0;
-uint_fast16_t debugOffset = 0;
-uint8_t debugBuffer[DEBUG_BUFFER_SIZE];
-#endif
-
-// UART Buffers
-static uint8_t UART1_RX_DMA_Buffer[UART_RX_BUFFER_SPACE+UART_RX_BUFFER_SIZE];
-static uint8_t UART2_RX_DMA_Buffer[UART_RX_BUFFER_SPACE+UART_RX_BUFFER_SIZE];
-static uint8_t UART3_RX_DMA_Buffer[UART_RX_BUFFER_SPACE+UART_RX_BUFFER_SIZE];
+/* Structures */
 
 // UART State
 enum CommState {
@@ -50,56 +40,39 @@ enum CommState {
 	CommID = 1,
 	CommACK = 2,
 	CommReady = CommID | CommACK,
-	Calibrated = CommReady | 4
-};
-enum DataStage {
-	None = 0,
-	DataBlobs = 1,
-	Poses = 2,
-	Done = DataBlobs | Poses
+	Stall = CommReady | 4
 };
 struct DataPacket {
+	bool unhandled;
 	uint8_t *data;
 	uint_fast16_t len;
 };
 struct PortState {
 	enum CommState commState;
-	enum DataStage dataStage;
-	struct DataPacket blobs;
-	struct DataPacket poses;
+	struct DataPacket data;
 	TimePoint lastComm;
 	uint_fast16_t cmd;
 };
-static struct PortState portStates[4]; // First one is invalid, just so we can index with UART 1,2,3
 
-// UART Messages
-static const uint8_t msg_id_opp[] = u8"MakersVR_MarkerDetector";
-static const uint8_t msg_id_own[] = u8"MakersVR_MarkerTracker";
-static const uint8_t msg_ack[] = u8"#ACK";
-static const uint8_t msg_nak[] = u8"#NAK";
 
-/* Private function prototypes */
+/* Function Prototypes */
+
+// Setup function prototypes
 static void LL_Init(void);
 static void SystemClock_Config(void);
 static void GPIO_Init(void);
 static void UART_Init(void);
 static void EXTI_Init(void);
 
-void delay(uint_fast16_t us);
-void toggle() { GPIOC->ODR ^= LL_GPIO_PIN_13; }
-void blink() { toggle(); LL_mDelay(100); toggle(); }
+// Utility
+static inline void toggle() { GPIOC->ODR ^= LL_GPIO_PIN_13; }
+static inline void blink() { toggle(); LL_mDelay(100); toggle(); }
 
-/* USB */
+// USB
 static usbd_respond usbd_control_respond(usbd_device *usbd, usbd_ctlreq *req);
 static usbd_respond usbd_control_receive(usbd_device *usbd, usbd_ctlreq *req);
-static usbd_callbacks usbd_impl_callbacks = {
-	.usbd_ctrl_rsp = usbd_control_respond,
-	.usbd_ctrl_rcv = usbd_control_receive,
-};
 
-/* UART */
-static USART_TypeDef * const UART[] = { NULL, USART1, USART2, USART3 };
-static const uint32_t DMA_Channels[] = { 0, LL_DMA_CHANNEL_5, LL_DMA_CHANNEL_6, LL_DMA_CHANNEL_3 };
+// UART
 static void UART_Send(uint_fast8_t port, const uint8_t* data, uint_fast8_t len);
 static inline void UART_HoldPacket(uint_fast8_t port);
 static inline void UART_ReleasePacket(uint_fast8_t port);
@@ -108,13 +81,43 @@ static inline void UART_NextPackets();
 static inline void UART_ResetPort(uint_fast8_t port);
 
 
-static inline void UART_SendID(uint_fast8_t port)
-{
-	uint_fast8_t idSz = sizeof(msg_id_own)-1;
-	uint8_t header[] = { '#', 'I', '0' + idSz/10, '0' + idSz%10 };
-	UART_Send(port, header, sizeof(header));
-	UART_Send(port, msg_id_own, sizeof(msg_id_own)-1);
-}
+/* Variables */
+
+volatile uint32_t msCounter = 0;
+static volatile bool isStreaming;
+static uint8_t sendBuffer[64];
+TimePoint startup = { 0, 0 };
+TimePoint lastPing = { 0, 0 };
+
+// Debug
+#ifdef DEBUG
+volatile uint_fast16_t debugPos = 0;
+volatile uint_fast16_t debugOffset = 0;
+uint8_t debugBuffer[DEBUG_BUFFER_SIZE];
+#endif
+
+// Constants
+const uint_fast8_t usbHeaderLength = 8;
+
+// UART State
+static struct PortState portStates[4]; // First one is invalid, just so we can index with UART 1,2,3
+// UART Buffers
+static uint8_t UART1_RX_DMA_Buffer[UART_RX_BUFFER_SPACE+UART_RX_BUFFER_SIZE];
+static uint8_t UART2_RX_DMA_Buffer[UART_RX_BUFFER_SPACE+UART_RX_BUFFER_SIZE];
+static uint8_t UART3_RX_DMA_Buffer[UART_RX_BUFFER_SPACE+UART_RX_BUFFER_SIZE];
+// Hardware mapping
+static USART_TypeDef * const UART[] = { NULL, USART1, USART2, USART3 };
+static const uint32_t DMA_Channels[] = { 0, LL_DMA_CHANNEL_5, LL_DMA_CHANNEL_6, LL_DMA_CHANNEL_3 };
+// Fixed UART Messages
+static const uint8_t msg_id_opp[] = u8"MakersVR_MarkerDetector";
+static const uint8_t msg_id_own_full[] = u8"#I16MakersVR_MarkerTracker"; // Assert length of payload in hex
+static const uint8_t msg_ack[] = u8"#ACK";
+static const uint8_t msg_nak[] = u8"#NAK";
+static const uint8_t msg_start[] = u8"#+00";
+static const uint8_t msg_stop[] = u8"#-00";
+static const uint8_t msg_ping[] = u8"#P00";
+
+/* Functions */
 
 int main(void)
 {
@@ -126,160 +129,99 @@ int main(void)
 	GPIO_Init();
 	EXTI_Init();
 
-	// Init UART
-	UART_Init();
+	// Init state
 	memset(portStates, 0, sizeof(portStates));
 
-	// Init libusb_stm32 USB device stack
-	usbd_impl_init(&usbd_impl_callbacks);
+	// Init UART
+	UART_Init();
 
-	// Set LED on
+	// Init libusb_stm32 USB device stack
+	usbd_impl_init((usbd_callbacks){ usbd_control_respond, usbd_control_receive });
+
+	// startup sequence
+	SetTimePoint(&startup);
+	DEBUG_STR("/S");
 	GPIOC->ODR |= LL_GPIO_PIN_13;
+	delayUS(10000); // 10ms
+	GPIOC->ODR &= ~LL_GPIO_PIN_13;
 	
 	// Send out Identification over UART
-	UART_SendID(1);
-	UART_SendID(2);
-	UART_SendID(3);
+	UART_Send(1, msg_id_own_full, sizeof(msg_id_own_full)-1);
+	UART_Send(2, msg_id_own_full, sizeof(msg_id_own_full)-1);
+	UART_Send(3, msg_id_own_full, sizeof(msg_id_own_full)-1);
 
-	while(1)
+	TimePoint cur;
+	int iteration = 0;
+	while (1)
 	{
-		TimePoint cur;
 		SetTimePoint(&cur);
-		TimeSpan framePos = GetTimeSpan(&cur, &lastISO) % 1000;
-//		TimeSpan framePos = getUSCounter()-lastISO.us;
-//		framePos = framePos < 0? 1000+framePos : framePos;
 
-//		if (usbd_TX_ready && framePos > 1000-10)
-//		{ // Signal to only send data next ISO frame
-//			usbd_TX_ready = false;
-//		}
+		if (isStreaming)
+		{ // Send packets
 
-		uint_fast8_t cntDisconnected = 0;
-		for (uint_fast8_t i = 1; i < 4; i ++)
-		{
-			if (portStates[i].commState == CommNoCon)
-				cntDisconnected++;
-			else if ((portStates[i].commState & CommReady) == CommReady && (portStates[i].dataStage & DataBlobs) == DataBlobs)
+			// Determine time in USB frame
+			uint_fast16_t frameTime = (cur.us + 1000 - lastSOF.us) % 1000;
+			struct USBPortState *usbPort = usbd_alt_interface? &isoPort : &intPort[0];
+			uint_fast16_t portTime = (frameTime + 1000 - usbPort->framePos)%1000;
+
+			for (uint_fast8_t i = 1; i < 4; i++)
 			{
-				if (usbd_TX_ready)
-				{ // Current ISO frame is unoccupied, ready to send
-					uint8_t *data = portStates[i].blobs.data;
-					uint_fast16_t dataCount = portStates[i].blobs.len;
-					// Replace UART header with USB header
-					const uint_fast8_t headerLength = 8;
-					uint8_t *packet = data-headerLength;
-					uint8_t *hdrPos = packet;
-					*(hdrPos++) = '0' + i;
-					*(hdrPos++) = 'B';
-					*(hdrPos++) = '0' + dataCount / 10;
-					*(hdrPos++) = '0' + dataCount % 10;
-					*(hdrPos++) = ':';
-					*(hdrPos++) = '0' + framePos / 100;
-					*(hdrPos++) = '0' + (framePos % 100) / 10;
-					*(hdrPos++) = '0' + framePos % 10;
-					usbd_impl_send(packet, dataCount*6 + headerLength);
-					toggle();
-					// Release UART packet to wait for the next one
-					UART_ReleasePacket(i);
-				}
-			}
-			else
-			{ // Either ready and waiting for blobs or currently connecting
-				TimeSpan timeSinceLastComm = GetTimeSpan(&cur, &portStates[i].lastComm);
-				if (timeSinceLastComm/1000 > UART_PACKET_TIMEOUT)
-				{ // Reset Comm
-					UART_Send(i, msg_nak, sizeof(msg_nak)-1);
-					UART_ResetPort(i);
-					DEBUG_CHARR('/', '0'+i, 'T', 'M', 'O');
-/*					usbSendBuffer[0] = 'S';
-					usbSendBuffer[1] = 'T';
-					usbSendBuffer[2] = 'L';
-					usbd_impl_send(usbSendBuffer, 3);*/
-				}
-			}
-		}
-
-/*
-		static uint32_t itNoCon = 0;
-		if (cntDisconnected == 3 && itNoCon++ >= 5000)
-		{ // No connected detectors
-			itNoCon = 0;
-			usbSendBuffer[0] = 'N';
-			usbSendBuffer[1] = 'C';
-			usbSendBuffer[2] = 'D';
-			usbd_impl_send(usbSendBuffer, 3);
-			DEBUG_CHARR('/', 'N', 'C', 'D');
-		}
-		else itNoCon = 0;*/
-	}
-
-/*	uint8_t itNoCon = 0;
-	uint8_t itStall = 0;
-	while(1)
-	{
-		uint8_t cntReady = 0, cntWaiting = 0, cntDisconnected = 0;
-		for (uint8_t i = 1; i < 4; i ++)
-		{
-			if (portStates[i].commState == CommNoCon)
-				cntDisconnected++;
-			else if ((portStates[i].commState & CommReady) == CommReady && (portStates[i].dataStage & DataBlobs) == DataBlobs)
-				cntReady++;
-			else
-			{ // Either ready and waiting for blobs or currently connecting
-				cntWaiting++;
-				portStates[i].timeout++;
-				if (portStates[i].timeout > UART_PACKET_TIMEOUT)
-				{ // Reset Comm
-					UART_Send(i, msg_nak, sizeof(msg_nak)-1);
-					UART_ResetPort(i);
-					DEBUG_CHARR('/', '0'+i, 'T', 'M', 'O');
-				}
-			}
-		}
-
-		if (cntWaiting == 0)
-		{ // All connected marker detectors have send their blobs
-			if (cntReady > 0)
-			{
-				usbSendBuffer[0] = 'D';
-				usbSendBuffer[1] = ':';
-				usbSendBuffer[2] = '0' + cntReady;
-				usbSendBuffer[3] = ':';
-				uint16_t curDataPos = 4;
-				for (uint8_t i = 1; i < 4; i ++)
-				{
-					if ((portStates[i].commState & CommReady) == CommReady && (portStates[i].dataStage & DataBlobs) == DataBlobs)
-					{
-						//memcpy(&usbSendBuffer[curDataPos], portStates[i].blobs.data, portStates[i].blobs.len);
-						curDataPos += portStates[i].blobs.len;
-						UART_NextPacket(i);
+				if ((portStates[i].commState & CommReady) == CommReady && portStates[i].data.unhandled)
+				{ // Send unhandled UART packet out to USB
+					if (portTime < 1000-USB_WRITE_BUFFER_TIME*i && usbPort->bufferPos == 0 && usbPort->bufferSz > portStates[i].data.len+usbHeaderLength)
+					{ // Port is ready to send, with time left to write buffer
+						//DEBUG_CHARR('/', hex[portStates[i].data.len>>4], hex[portStates[i].data.len&15], ':', '0' + portTime/100, '0' + (portTime % 100) / 10, '0' + portTime%10);
+						// Overwrite now unused UART header with USB header
+						uint8_t *packet = portStates[i].data.data - usbHeaderLength;
+						uint8_t *hdrPos = packet;
+						*(hdrPos++) = '0' + i-1;
+						*(hdrPos++) = 'B';
+						*(hdrPos++) = hex[portStates[i].data.len>>4];
+						*(hdrPos++) = hex[portStates[i].data.len&15];
+						*(hdrPos++) = ':';
+						*(hdrPos++) = '0' + portTime / 100;
+						*(hdrPos++) = '0' + (portTime % 100) / 10;
+						*(hdrPos++) = '0' + portTime % 10;
+						// Send usb packet
+						usbd_impl_send(packet, portStates[i].data.len + usbHeaderLength);
+						// Release UART packet to wait for the next one
+						UART_ReleasePacket(i);
+						// Mark packet as handled
+						portStates[i].data.len = 0;
+						portStates[i].data.unhandled = false;
 					}
 				}
-				usbd_impl_send(&hUSB, usbSendBuffer, curDataPos);
-				itNoCon = itStall = 0;
 			}
-			else if (itNoCon++ >= 500)
-			{
-				itNoCon = 0;
-				usbSendBuffer[0] = 'N';
-				usbSendBuffer[1] = 'C';
-				usbSendBuffer[2] = 'D';
-				usbd_impl_send(&hUSB, usbSendBuffer, 3);
-				DEBUG_CHARR('/', 'N', 'C', 'D');
-			}
-		}
-		else if (itStall++ >= 500)
-		{ // Waiting for one or more Marker Detectors for too long
-			itStall = 0;
-			usbSendBuffer[0] = 'S';
-			usbSendBuffer[1] = 'T';
-			usbSendBuffer[2] = 'L';
-			usbd_impl_send(&hUSB, usbSendBuffer, 3);
-			DEBUG_CHARR('/', 'S', 'T', 'L');
 		}
 
-//		LL_mDelay(1);
-	}*/
+		// Occasionally check timeouts
+		if (iteration++ % 1000 != 0) continue;
+
+		// Check UART timeouts
+		for (uint_fast8_t i = 1; i < 4; i++)
+		{
+			if (portStates[i].commState == CommNoCon) continue;
+			TimeSpan timeSinceLastComm = GetTimeSpanMS(&cur, &portStates[i].lastComm);
+			if (timeSinceLastComm > UART_COMM_TIMEOUT)
+			{ // Reset Comm after silence
+				UART_Send(i, msg_nak, sizeof(msg_nak)-1);
+				UART_ResetPort(i);
+				DEBUG_CHARR('/', '0'+i, 'T', 'M', 'O');
+			}
+		}
+
+		// Check ping
+		TimeSpan timeSinceLastPing = GetTimeSpanMS(&cur, &lastPing);
+		if (timeSinceLastPing > UART_PING_INTERVAL)
+		{ // Send ping occasionally (expecting a response)
+			for (uint_fast8_t i = 1; i < 4; i ++)
+			{
+				if ((portStates[i].commState & CommReady) == CommReady)
+					UART_Send(i, msg_ping, sizeof(msg_ping)-1);
+			}
+			lastPing = cur;
+		}
+	}
 }
 
 
@@ -320,13 +262,93 @@ static usbd_respond usbd_control_respond(usbd_device *usbd, usbd_ctlreq *req)
 		return usbd_ack;
 #endif
 	}
+	if (req->bRequest == 0x02)
+	{ // Request to iterate connected Marker Detectors
+		sendBuffer[0] = 3; // Maximum supported detectors
+		sendBuffer[1] = portStates[1].commState;
+		sendBuffer[2] = portStates[2].commState;
+		sendBuffer[3] = portStates[3].commState;
+		sendBuffer[4] = 0xFF;
+		sendBuffer[5] = isStreaming;
+		TimePoint cur;
+		SetTimePoint(&cur);
+		TimeSpan timeSinceStartupMS = GetTimeSpanUS(&cur, &startup) / 1000;
+		sendBuffer[6] = timeSinceStartupMS / 1000; // Seconds
+		sendBuffer[7] = (timeSinceStartupMS % 1000) * 1000 / 255; // Second in 1/255 steps
+		usbd->status.data_ptr = (void*)&sendBuffer;
+		usbd->status.data_count = 8;
+		return usbd_ack;
+	}
 	return usbd_fail;
 }
 
 /* Request from host not expecting a response on control endpoint (vendor-defined on the single interface) */
 static usbd_respond usbd_control_receive(usbd_device *usbd, usbd_ctlreq *req)
 { // Handle data in req->data of length req->wLength
-	//DEBUG_CHARR('/', 'C', '0'+req->wLength/10, '0'+req->wLength%10);
+	if (req->bRequest == 0x00)
+	{ // Request to start streaming
+		if (req->wLength >= 6)
+		{ // Send included setup packet first
+			sendBuffer[0] = '#';
+			sendBuffer[1] = 'S';
+			sendBuffer[2] = hex[req->wLength >> 4];
+			sendBuffer[3] = hex[req->wLength & 0xF];
+			memcpy(sendBuffer+4, req->data, req->wLength);
+			if ((portStates[1].commState & CommReady) == CommReady)
+				UART_Send(1, sendBuffer, 4+req->wLength);
+			if ((portStates[2].commState & CommReady) == CommReady)
+				UART_Send(2, sendBuffer, 4+req->wLength);
+			if ((portStates[3].commState & CommReady) == CommReady)
+				UART_Send(3, sendBuffer, 4+req->wLength);
+			DEBUG_STR("/SETUP");
+		}
+		else
+			DEBUG_STR("/NOSTP");
+		// Then start streaming
+		isStreaming = true;
+		// Send connected Marker Detector start command
+		for (uint_fast8_t i = 1; i < 4; i++)
+		{
+			if ((portStates[i].commState & CommReady) == CommReady)
+				UART_Send(i, msg_start, sizeof(msg_start)-1);
+		}
+		DEBUG_STR("/STRON");
+		return usbd_ack;
+	}
+	else if (req->bRequest == 0x01)
+	{ // Request to stop streaming
+		isStreaming = false;
+		// Send connected Marker Detector stop command
+		for (uint_fast8_t i = 1; i < 4; i ++)
+		{
+			if ((portStates[i].commState & CommReady) == CommReady)
+				UART_Send(i, msg_stop, sizeof(msg_stop)-1);
+		}
+		DEBUG_STR("/STROFF");
+		return usbd_ack;
+	}
+	else if (req->bRequest == 0x02)
+	{ // Setup data (without start stream request)
+		if (req->wLength >= 6)
+		{
+			sendBuffer[0] = '#';
+			sendBuffer[1] = 'S';
+			sendBuffer[2] = hex[req->wLength >> 4];
+			sendBuffer[3] = hex[req->wLength & 0xF];
+			memcpy(sendBuffer+4, req->data, req->wLength);
+			if ((portStates[1].commState & CommReady) == CommReady)
+				UART_Send(1, sendBuffer, 4+req->wLength);
+			if ((portStates[2].commState & CommReady) == CommReady)
+				UART_Send(2, sendBuffer, 4+req->wLength);
+			if ((portStates[3].commState & CommReady) == CommReady)
+				UART_Send(3, sendBuffer, 4+req->wLength);
+			DEBUG_STR("/SETUP");
+		}
+		else
+			DEBUG_STR("/NOSTP");
+		
+		return usbd_ack;
+	}
 	return usbd_ack;
 }
 
@@ -342,20 +364,21 @@ static void UART_ProcessData(uint_fast8_t port, uint8_t* rcv, uint_fast16_t rcvS
 		uint_fast8_t zeros = 0;
 		for (uint_fast8_t i = 0; i < rcvSz; i++)
 			if (rcv[i] == 0) zeros++;
-		if (zeros*3 >= rcvSz*2) return UART_ResetPort(port);
+		if (zeros*3 >= rcvSz*2) return UART_NextPacket(port);
 	}
 
 	struct PortState *state = &portStates[port];
+	SetTimePoint(&state->lastComm);
 	while (true)
 	{
-		while (rcv[state->cmd] != '#')
-		{ // Wait for next start of command
-			if (++state->cmd >= rcvSz) return;
-		}
+		// Wait for next start of command
+		while (state->cmd < rcvSz && rcv[state->cmd] != '#' && ++state->cmd < rcvSz);
+		// Clear buffer if no command is left
+		if (state->cmd >= rcvSz) return UART_NextPacket(port);
 		// Assure at least packet header is received fully
 		if (state->cmd+4 > rcvSz) return;
 
-		uint_fast8_t cmd = state->cmd;
+		uint_fast16_t cmd = state->cmd;
 		if (rcv[cmd+1] == 'N' && rcv[cmd+2] == 'A' && rcv[cmd+3] == 'K')
 		{ // NAK received
 			DEBUG_CHARR('/', '0'+port, 'N', 'A', 'K');
@@ -363,11 +386,12 @@ static void UART_ProcessData(uint_fast8_t port, uint8_t* rcv, uint_fast16_t rcvS
 			return;
 		}
 
-		SetTimePoint(&portStates[port].lastComm);
-
 		// Only relevant for packages, not ACK or NAK
 		uint_fast8_t cmdID = rcv[cmd+1];
-		uint_fast16_t dataCount = (rcv[cmd+2]-'0')*10 + (rcv[cmd+3]-'0');
+		uint_fast8_t a = rcv[cmd+2]-'0', b = rcv[cmd+3]-'0';
+		a = a > 9? a-('A'-'9'+1) : a;
+		b = b > 9? b-('A'-'9'+1) : b;
+		uint_fast16_t dataCount = a*16 + b;
 		uint_fast16_t dataStart = cmd+4;
 		uint8_t *data = &rcv[dataStart];
 
@@ -389,7 +413,7 @@ static void UART_ProcessData(uint_fast8_t port, uint8_t* rcv, uint_fast16_t rcvS
 					// Send acknowledgement and own identification if not yet acknowledged
 					UART_Send(port, msg_ack, sizeof(msg_ack)-1);
 					if (!(state->commState & CommACK))
-						UART_SendID(port);
+						UART_Send(port, msg_id_own_full, sizeof(msg_id_own_full)-1);
 				}
 				else
 				{ // Wrong ID, reset
@@ -404,79 +428,62 @@ static void UART_ProcessData(uint_fast8_t port, uint8_t* rcv, uint_fast16_t rcvS
 			{ // Finished comm setup, connection is ready
 				DEBUG_CHARR('/', '0'+port, 'R', 'D', 'Y');
 				UART_NextPacket(port);
-			}
-
-			return;
-		}
-
-		// Received full command
-		if (cmdID == 'B') // identified marker packet
-		{
-			// Make sure all data is there
-			if (rcvSz - dataStart < dataCount*6) return;
-
-			// Calculate how many microseconds we are into the USB frame
-/*			TimePoint cur;
-			SetTimePoint(&cur);
-			TimeSpan framePos = GetTimeSpan(&cur, &lastISO) % 1000;*/
-/*			TimeSpan framePos = getUSCounter()-lastISO.us-5;
-			framePos = framePos < 0? 1000+framePos : framePos;
-//			DEBUG_CHARR('/', 'B', '0' + framePos/100, '0'+(framePos%100)/10, '0'+(framePos%10));
-			if (framePos > 1000-10)
-			{ // Signal to only send data next ISO frame
-				usbd_TX_ready = false;
-			}*/
-
-			// Set data ready
-			state->dataStage |= DataBlobs;
-			state->blobs.data = data;
-			state->blobs.len = dataCount;
-
-			// Hold onto this UART packet
-//			state->cmd += 4 + dataCount*6;
-			UART_HoldPacket(port);
-
-/*			if (framePos > 990 || !usbd_TX_ready)
-			{ // only a short while until the current ISO frame ends
-				// Schedule until after frame is over to send
-				usbd_TX_ready = false;
-				state->dataStage |= DataBlobs;
-				state->blobs.data = data;
-				state->blobs.len = dataCount;
-				// Hold onto this UART packet
-				UART_NextPacket(port);
-			}
-			else
-			{ // Plenty of time to write to buffer before ISO frame ends
-				// Replace UART header with USB header
-				const uint_fast8_t headerSize = 8;
-				uint_fast16_t header = dataStart-headerSize;
-				uint_fast16_t pos = header;
-				rcv[pos++] = '0' + port;
-				rcv[pos++] = 'B';
-				rcv[pos++] = '0' + dataCount / 10;
-				rcv[pos++] = '0' + dataCount % 10;
-				rcv[pos++] = ':';
-				rcv[pos++] = '0' + framePos / 100;
-				rcv[pos++] = '0' + (framePos % 100) / 10;
-				rcv[pos++] = '0' + framePos % 10;
-				usbd_impl_send(&rcv[header], dataCount*6 + headerSize);
-				// Accept next UART packet
-				UART_NextPacket(port);
-			}
-*/
-			return;
-		}
-		else if (cmdID == 'P') // identified pose packet
-		{
-			// Make sure all data is there
-			if (rcvSz - dataStart < dataCount*14)
 				return;
-			state->dataStage |= Poses;
-			state->poses.data = data;
-			state->poses.len = dataCount*14;
-			state->cmd += 4 + dataCount*14;
+			}
 			return;
+		}
+		else
+		{ // Received full command
+			if (cmdID == 'B')
+			{ // Identified marker packet
+
+				// Make sure all data is there
+				if (rcvSz - dataStart < dataCount) return;
+				state->cmd += 4 + dataCount;
+
+				// Calculate time left until next usb packet can be sent
+				TimePoint cur;
+				SetTimePoint(&cur);
+				uint_fast16_t frameTime = (cur.us + 1000 - lastSOF.us) % 1000;
+				struct USBPortState *usbPort = usbd_alt_interface? &isoPort : &intPort[0];
+				uint_fast16_t portTime = (frameTime + 1000 - usbPort->framePos)%1000;
+
+				//DEBUG_CHARR('/', hex[dataCount>>4], hex[dataCount&15], ':', '0' + portTime/100, '0' + (portTime % 100) / 10, '0' + portTime%10);
+
+				if (portTime < 1000-USB_WRITE_BUFFER_TIME && usbPort->bufferPos == 0 && usbPort->bufferSz > dataCount+usbHeaderLength)
+				{ // Plenty of time to write to buffer before ISO frame ends
+					// Replace UART header with USB header
+					uint_fast16_t header = dataStart-usbHeaderLength;
+					uint_fast16_t pos = header;
+					rcv[pos++] = '0' + port-1;
+					rcv[pos++] = 'B';
+					rcv[pos++] = hex[dataCount>>4];
+					rcv[pos++] = hex[dataCount&15];
+					rcv[pos++] = ':';
+					rcv[pos++] = '0' + portTime / 100;
+					rcv[pos++] = '0' + (portTime % 100) / 10;
+					rcv[pos++] = '0' + portTime % 10;
+					usbd_impl_send(&rcv[header], dataCount + usbHeaderLength);
+					// Accept next UART packet
+					UART_NextPacket(port);
+				}
+				else
+				{ // Can't send immediately, schedule until after frame is over to send
+					//DEBUG_CHARR('/', hex[dataCount>>4], hex[dataCount&15], ':', '0' + portTime/100, '0' + (portTime % 100) / 10, '0' + portTime%10);
+					state->data.unhandled = true;
+					state->data.data = data;
+					state->data.len = dataCount;
+					// Hold onto this UART packet
+					UART_HoldPacket(port);
+				}
+				
+				return;
+			}
+			if (cmdID == 'P')
+			{ // Ping response
+				// Nothing to do here, lastComm is already updated
+				state->cmd += 4+dataCount;
+			}
 		}
 	}
 }
@@ -561,18 +568,13 @@ static void SystemClock_Config(void)
 }
 void TIM2_IRQHandler(void)
 {
+#if TIM_SR_UIF == 1 
+	msCounter += TIM2->SR & TIM_SR_UIF;
+#else
 	if (TIM2->SR & TIM_SR_UIF)
 		msCounter++;
+#endif
 	TIM2->SR = 0;
-}
-void delay(uint_fast16_t us)
-{
-	uint32_t tgtUS = getUSCounter() + us%1000;
-	uint32_t tgtMS = msCounter + us/1000 + tgtUS/1000;
-	tgtUS = tgtUS % 1000;
-
-	while (msCounter != tgtMS);
-	while (getUSCounter() != tgtUS);
 }
 
 static void GPIO_Init(void)
@@ -587,13 +589,6 @@ static void GPIO_Init(void)
 	LL_GPIO_SetPinSpeed(GPIOC, LL_GPIO_PIN_13, LL_GPIO_MODE_OUTPUT_2MHz);
 	LL_GPIO_SetPinOutputType(GPIOC, LL_GPIO_PIN_13, LL_GPIO_OUTPUT_PUSHPULL);
 	LL_GPIO_SetPinPull(GPIOC, LL_GPIO_PIN_13, LL_GPIO_PULL_DOWN);
-
-/*	LL_GPIO_InitTypeDef GPIO_InitStruct;
-	GPIO_InitStruct.Pin = LL_GPIO_PIN_13;
-	GPIO_InitStruct.Mode = LL_GPIO_MODE_OUTPUT;
-	GPIO_InitStruct.Speed = LL_GPIO_MODE_OUTPUT_2MHz;
-	GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
-	LL_GPIO_Init(GPIOC, &GPIO_InitStruct);*/
 }
 
 /** UART Initialization Function */
@@ -611,8 +606,8 @@ static void UART_Init(void)
 	// DMA & UART Peripheral clock enable
 	LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA1);
 	LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_USART1);
-	LL_APB2_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_USART2);
-	LL_APB2_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_USART3);
+	LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_USART2);
+	LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_USART3);
 	
 	// Switch UART1 to alternative pin mapping on GPIOB
 	LL_GPIO_AF_EnableRemap_USART1();
@@ -716,23 +711,31 @@ static void UART_Send(uint_fast8_t port, const uint8_t* data, uint_fast8_t len)
 	{
 		LL_USART_TransmitData8(UART[port], data[d]);
 		int timeout = 0;
-		while (!LL_USART_IsActiveFlag_TXE(UART[port])) if(timeout++ > UART_TX_TIMEOUT) return UART_ResetPort(port);
+		while (!LL_USART_IsActiveFlag_TXE(UART[port]) && ++timeout < UART_TX_TIMEOUT);
+		if (timeout >= UART_TX_TIMEOUT)
+		{
+			DEBUG_CHARR('/', '0'+port, 'T', 'X', 'E');
+			return UART_ResetPort(port);
+		}
 	}
 	int timeout = 0;
-	while (!LL_USART_IsActiveFlag_TC(UART[port])) if(timeout++ > UART_TX_TIMEOUT) return UART_ResetPort(port);
+	while (!LL_USART_IsActiveFlag_TC(UART[port]) && ++timeout < UART_TX_TIMEOUT);
+	if (timeout >= UART_TX_TIMEOUT)
+	{
+		DEBUG_CHARR('/', '0'+port, 'T', 'C', 'E');
+		return UART_ResetPort(port);
+	}
 }
 
 /** Control functions to handle UART packet processing */
 static inline void UART_HoldPacket(uint_fast8_t port)
 {
-	SetTimePoint(&portStates[port].lastComm);
 	LL_DMA_DisableChannel(DMA1, DMA_Channels[port]);
 	while (LL_DMA_IsEnabledChannel(DMA1, DMA_Channels[port]));
 	LL_DMA_SetDataLength(DMA1, DMA_Channels[port], UART_RX_BUFFER_SIZE);
 }
 static inline void UART_ReleasePacket(uint_fast8_t port)
 {
-	portStates[port].dataStage = 0;
 	portStates[port].cmd = 0;
 	LL_DMA_EnableChannel(DMA1, DMA_Channels[port]);
 }
@@ -750,8 +753,7 @@ static inline void UART_NextPackets()
 static inline void UART_ResetPort(uint_fast8_t port)
 {
 	memset(&portStates[port], 0, sizeof(struct PortState));
-	UART_HoldPacket(port);
-	UART_ReleasePacket(port);
+	UART_NextPacket(port);
 }
 
 /** USART global interrupt handlers */
@@ -776,7 +778,7 @@ void USART3_IRQHandler() { USART_IRQHandler(3, USART3, LL_DMA_CHANNEL_3, UART3_R
 static void EXTI_Init(void)
 {
 	// Setup input pins
-/*	LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOA);
+	LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOA);
 	LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_0, LL_GPIO_MODE_INPUT);
 	LL_GPIO_SetPinSpeed(GPIOA, LL_GPIO_PIN_13, LL_GPIO_MODE_OUTPUT_2MHz);
 	LL_GPIO_SetPinOutputType(GPIOA, LL_GPIO_PIN_13, LL_GPIO_OUTPUT_PUSHPULL);
@@ -788,9 +790,7 @@ static void EXTI_Init(void)
 
 	AFIO->EXTICR[0] &= ~(0x1111 << 0); // Select port A
 	AFIO->EXTICR[0] &= ~(0x1111 << 4); // Select port A
-	AFIO->EXTICR[1] &= ~(0x1111 << 0); // Select port A*/
-
-
+	AFIO->EXTICR[1] &= ~(0x1111 << 0); // Select port A
 }
 
 void EXTI0_IRQHandler()
@@ -825,7 +825,7 @@ void NMI_Handler(void){}
 
 /** This function handles Hard fault interrupt. */
 void HardFault_Handler(void)
-{	
+{
 	DEBUG_STR("/HDF");
 	while (1);
 }
