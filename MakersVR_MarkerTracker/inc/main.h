@@ -14,6 +14,11 @@ extern "C"
 
 #include "stm32.h"
 #include "stddef.h"
+#include <stdlib.h>
+
+static const uint8_t hex[] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
+
+/* Debug */
 
 #define DEBUG
 #ifdef DEBUG
@@ -21,17 +26,16 @@ extern "C"
 #include <string.h>
 #include <stdint.h>
 
-#define DEBUG_BUFFER_SIZE 512
-extern uint_fast16_t debugPos;
-extern uint_fast16_t debugOffset;
+#define DEBUG_BUFFER_SIZE 256
+extern volatile uint_fast16_t debugPos;
+extern volatile uint_fast16_t debugOffset;
 extern uint8_t debugBuffer[DEBUG_BUFFER_SIZE];
 
 #define DEBUG_BUF(BUF, SZ) \
-debugPos = debugPos + (SZ); \
-if (debugPos <= DEBUG_BUFFER_SIZE) \
-	memcpy(&debugBuffer[debugPos - (SZ)], BUF, SZ); \
-else \
-	debugPos = DEBUG_BUFFER_SIZE // Prevent any other debug messages to come through to avoid confusion
+if (debugPos + (SZ) <= DEBUG_BUFFER_SIZE) { \
+	memcpy(&debugBuffer[debugPos], BUF, SZ); \
+	debugPos += SZ; \
+} else debugPos = DEBUG_BUFFER_SIZE // Prevent any other debug messages to come through to avoid confusion
 #define DEBUG_CHARR(...) \
 { \
 	uint8_t arr[] = { __VA_ARGS__ }; \
@@ -41,8 +45,7 @@ else \
 { \
 	const uint8_t arr[] = u8 ## STR; \
 	DEBUG_BUF(arr, sizeof(arr)-1); \
-}
-static const uint8_t hex[] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
+} // No -1 is fine, don't worry about it
 #define DEBUG_HEX(BUF, SZ) \
 { \
 	uint8_t arr[SZ*2]; \
@@ -57,33 +60,49 @@ static const uint8_t hex[] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 #define DEBUG_BUF(...) {}
 #define DEBUG_CHARR(...) {}
 #define DEBUG_STR(...) {}
+#define DEBUG_HEX(...) {}
 #endif // DEBUG
 
+
+/* us Timing */
 
 typedef struct {
 	uint32_t ms;
 	uint_fast16_t us;
 } TimePoint;
-typedef int32_t TimeSpan;
+typedef uint64_t TimeSpan; // Good for ~1hr time difference only
 
 // Global System Timer
-extern uint32_t msCounter;
+extern volatile uint32_t msCounter;
 
 // Simple Time helpers
-inline uint_fast16_t getUSCounter()
+inline __attribute__((always_inline)) uint_fast16_t getUSCounter()
 {
 	return TIM2->CNT;
 }
-inline void SetTimePoint(TimePoint *point)
+inline __attribute__((always_inline)) void SetTimePoint(TimePoint *point)
 {
 	point->ms = msCounter;
 	point->us = getUSCounter();
 	if (point->ms != msCounter)
 		point->us = getUSCounter();
 }
-inline TimeSpan GetTimeSpan(TimePoint *pointB, TimePoint *pointA)
+inline __attribute__((always_inline)) TimeSpan GetTimeSpanUS(TimePoint *pointB, TimePoint *pointA)
 {
-	return (pointB->ms - pointA->ms) * 1000 + (pointB->us - pointA->us);
+	return (uint64_t)abs((int32_t)pointB->ms - (int32_t)pointA->ms) * 1000 + abs((int32_t)pointB->us - (int32_t)pointA->us);
+}
+inline __attribute__((always_inline)) TimeSpan GetTimeSpanMS(TimePoint *pointB, TimePoint *pointA)
+{
+	return (uint64_t)abs((int32_t)pointB->ms - (int32_t)pointA->ms);
+}
+inline __attribute__((always_inline)) void delayUS(uint32_t us)
+{
+	uint32_t tgtUS = getUSCounter() + us%1000;
+	uint32_t tgtMS = msCounter + us/1000 + tgtUS/1000;
+	tgtUS = tgtUS % 1000;
+
+	while (msCounter < tgtMS);
+	while (getUSCounter() < tgtUS);
 }
 
 

@@ -27,13 +27,21 @@ typedef struct
 	usbd_respond (*usbd_ctrl_rcv)(usbd_device *usbd, usbd_ctlreq *req);
 } usbd_callbacks;
 
-void usbd_impl_init(usbd_callbacks * impl_callbacks);
+struct USBPortState {
+	TimePoint lastFrame;
+	uint_fast16_t framePos;
+	uint_fast16_t bufferPos;
+	uint_fast16_t bufferSz;
+};
 
-int32_t usbd_impl_send(uint8_t* buffer, uint_fast16_t size);
-
+extern int usbd_alt_interface;
 extern TimePoint lastSOF;
-extern TimePoint lastISO;
-extern bool usbd_TX_ready;
+extern struct USBPortState isoPort;
+extern struct USBPortState intPort[1];
+
+void usbd_impl_init(usbd_callbacks impl_callbacks);
+
+int32_t usbd_impl_send(uint8_t *buffer, uint_fast16_t size);
 
 #ifdef __cplusplus
 }
