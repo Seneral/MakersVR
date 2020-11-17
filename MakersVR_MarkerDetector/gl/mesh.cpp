@@ -1,6 +1,6 @@
 #include "mesh.hpp"
 
-#include "defines.hpp"
+#include "shader.hpp" // Access to constant vertex data adresses
 
 #include <math.h>
 #include <iostream>

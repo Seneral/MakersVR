@@ -4,23 +4,24 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "blobdetection.hpp"
-
 // Alternative: Store buffer in VCSM (Video Core Shared Memory)
 // In theory VCSM removes need for the expensive read pixels call
 // In practice that is only relevant for larger buffers, for the extremely small bitmap it makes no difference
 #define USE_READ_PIXELS
 
-#include "defines.hpp"
+//#define BLOB_DEBUG
+//#define BLOB_TRACE
+//#define BLOB_VIZ_DOTS
+
+#include "blobdetection.hpp"
+
+// General GL
 #include "mesh.hpp"
 #include "shader.hpp"
 #include "texture.hpp"
 
 #include <cmath>
-#include <cstring>
-#include <vector>
 #include <map>
-#include <iostream>
 
 #ifndef USE_READ_PIXELS
 #include <interface/vcsm/user-vcsm.h>
@@ -34,7 +35,9 @@
 
 // Maximum number of components supported
 // NOT blob number, fractured blobs could take up many components that are eventually merged together
-#define MAX_COMPONENTS 256
+// Discard components above to limit performance drop
+#define MAX_COMPONENTS 128
+typedef uint8_t CompID; // Seems to be little to no performance difference
 
 /* Structures  */
 
@@ -45,7 +48,7 @@ typedef struct Region
 {
 	uint16_t x, y;
 	uint16_t bytes;
-	uint8_t compMap[4][4];
+	CompID compMap[4][4];
 } Region;
 
 /* Variables */
@@ -59,8 +62,10 @@ static Mesh *SSQuad;
 // Screen Space Shaders
 static ShaderProgram *shaderESBlobDetectRGB, *shaderESBlobDetectY, *shaderESBlobDetectYUV;
 static ShaderProgram *shaderESBlobEncode, *shaderESBlobViz, *shaderESPoint;
+static ShaderProgram *shaderCamBlitRGB, *shaderCamBlitY, *shaderCamBlitYUV;
 // Shader texture locations
 static int texRGBAdr, texYAdrY, texYUVAdrY, texYUVAdrU, texYUVAdrV;
+static int texBlitRGBAdr, texBlitYAdrY, texBlitYUVAdrY, texBlitYUVAdrU, texBlitYUVAdrV;
 // Intermediate render targets
 #ifdef USE_READ_PIXELS
 static FrameRenderTarget *blobMask, *blobMap;
@@ -73,7 +78,7 @@ static BlobMapRegion *blobMapRegions;
 // Dynamic buffer for all 4x4 regions that are part of a blob
 static std::vector<Region> blobRegions;
 // Shared buffer serving as a map from initial component ID to merged component ID
-static uint8_t *blobCompMerge;
+static CompID *blobCompMerge;
 // Memory block of zeros to optimize checking whole rows of regions for dots at once with memcmp
 static int mapRowSize;
 static unsigned char *mapRowZeros;
@@ -83,12 +88,12 @@ static GLuint vizPointsVBO;
 /* Local Functions */
 
 static void bindExternalTexture (GLuint adr, GLuint tex, int slot);
-static uint8_t resolveComponentMerge(uint8_t compID);
+static CompID resolveComponentMerge(CompID compID);
 
 /*
- * Intialize resources required for blob detection
+ * Initialize resources required for blob detection
  */
-void initBlobDetection (int width, int height, EGL_Setup eglSetup)
+bool initBlobDetection (int width, int height, EGL_Setup eglSetup)
 {
 	maskW = width;
 	maskH = height;
@@ -115,6 +120,10 @@ void initBlobDetection (int width, int height, EGL_Setup eglSetup)
 	shaderESBlobEncode = new ShaderProgram("../gl_shaders/BlobES/vert.glsl", "../gl_shaders/BlobES/frag_blobEncode.glsl");
 	shaderESBlobViz = new ShaderProgram("../gl_shaders/BlobES/vert.glsl", "../gl_shaders/BlobES/frag_blobViz.glsl");
 	shaderESPoint = new ShaderProgram("../gl_shaders/PointES/vert.glsl", "../gl_shaders/PointES/frag.glsl");
+	shaderCamBlitRGB = new ShaderProgram("../gl_shaders/CamES/vert.glsl", "../gl_shaders/CamES/frag_camRGB.glsl");
+	shaderCamBlitY = new ShaderProgram("../gl_shaders/CamES/vert.glsl", "../gl_shaders/CamES/frag_camY.glsl");
+	shaderCamBlitYUV = new ShaderProgram("../gl_shaders/CamES/vert.glsl", "../gl_shaders/CamES/frag_camYUV.glsl");
+	if (shaderESBlobDetectRGB->ID == 0 || shaderESBlobDetectY->ID == 0 || shaderESBlobDetectYUV->ID == 0 || shaderESBlobEncode->ID == 0 || shaderESBlobViz->ID == 0 || shaderESPoint->ID == 0 || shaderCamBlitRGB->ID == 0 || shaderCamBlitY->ID == 0 || shaderCamBlitYUV->ID == 0) return false;
 
 	// Find adresses of textures in shaders
 	texRGBAdr = glGetUniformLocation(shaderESBlobDetectRGB->ID, "image");
@@ -122,6 +131,11 @@ void initBlobDetection (int width, int height, EGL_Setup eglSetup)
 	texYUVAdrY = glGetUniformLocation(shaderESBlobDetectYUV->ID, "imageY");
 	texYUVAdrU = glGetUniformLocation(shaderESBlobDetectYUV->ID, "imageU");
 	texYUVAdrV = glGetUniformLocation(shaderESBlobDetectYUV->ID, "imageV");
+	texBlitRGBAdr = glGetUniformLocation(shaderCamBlitRGB->ID, "image");
+	texBlitYAdrY = glGetUniformLocation(shaderCamBlitY->ID, "imageY");
+	texBlitYUVAdrY = glGetUniformLocation(shaderCamBlitYUV->ID, "imageY");
+	texBlitYUVAdrU = glGetUniformLocation(shaderCamBlitYUV->ID, "imageU");
+	texBlitYUVAdrV = glGetUniformLocation(shaderCamBlitYUV->ID, "imageV");
 
 #ifdef USE_READ_PIXELS
 	// Setup intermediate Render Targets
@@ -137,8 +151,8 @@ void initBlobDetection (int width, int height, EGL_Setup eglSetup)
 #endif
 
 	// Setup resources used during blob detection
-	blobRegions.reserve(32);
-	blobCompMerge = (uint8_t*)malloc(MAX_COMPONENTS);
+	blobRegions.reserve(128);
+	blobCompMerge = (CompID*)malloc(MAX_COMPONENTS * sizeof(CompID));
 
 	// Allocate helper block of zeros of apropriate size of one map row
 	mapRowSize = mapW*2; // 2 Byte per map pixel (4x4 16Bit region)
@@ -147,23 +161,21 @@ void initBlobDetection (int width, int height, EGL_Setup eglSetup)
 
 	// Setup VertexBufferObject for point data
 	glGenBuffers(1, &vizPointsVBO);
+
+	return true;
 }
 
 /*
  * Perform blob detection step on the frame texture and output it into both target arrays in point and blob format
  * Intermediate results are available in blobMask and blobMap until next step
  */
-void performBlobDetection(CamGL_Frame *frame, std::vector<Cluster> &blobs)
+void performBlobDetectionBlocking(CamGL_Frame *frame, std::vector<Cluster> &blobs)
 {
-	// TODO: CPU and GPU in parallel! Currently only one working at once, waiting for the other
-// GPU Thread:
 	performBlobDetectionGPU(frame);
 	performBlobDetectionRegionsFetch();
-	// Relevant regions are now in CPU memory
-	// Signal CPU Thread
-// CPU Thread:
 	performBlobDetectionCPU(blobs);
 }
+
 /*
  * Perform blob detection GPU passes on the frame texture
  * Results are stored in blobMask and blobMap on the GPU, ready for readback
@@ -243,7 +255,7 @@ void performBlobDetectionRegionsFetch()
 			uint16_t bytes = blobMapRegions[y * bufW + x];
 			if (bytes != 0)
 			{ // Region (4x4 pixels) has at least one dot in it
-				uint16_t regInd = (uint16_t)blobRegions.size();
+				int regInd = blobRegions.size();
 				blobRegions.push_back({});
 				blobRegions[regInd].x = x;
 				blobRegions[regInd].y = y;
@@ -253,7 +265,7 @@ void performBlobDetectionRegionsFetch()
 	}
 
 #ifdef BLOB_DEBUG
-		std::cout << "Found " << blobRegions.size() << " regions with blobs!\n";
+	printf("Found %d regions with blobs!\n", blobRegions.size());
 #endif
 
 #ifndef USE_READ_PIXELS
@@ -268,8 +280,8 @@ void performBlobDetectionCPU(std::vector<Cluster> &blobs)
 {
 	blobCompMerge[0] = 0;
 
-	uint8_t compNum = 0; // Number of final components
-	uint8_t compIndex = 0; // Number of intermediary components
+	CompID compNum = 0; // Number of final components
+	CompID compIndex = 0; // Number of intermediary components
 
 	// Iterate over blob regions do connected component labeling
 	for (int i = 0; i < blobRegions.size(); i++)
@@ -304,23 +316,23 @@ void performBlobDetectionCPU(std::vector<Cluster> &blobs)
 		// Do connected component labelling within 4x4 region using connected components from top and left regions
 		for (int x = 0; x < 4; x++)
 		{
-			uint8_t top = 0;
+			CompID top = 0;
 			if (topRegion) top = topRegion->compMap[x][3];
 
 			for (int y = 0; y < 4; y++)
 			{
-				uint8_t compID = 0;
+				CompID compID = 0;
 				if (DOT(region->bytes, x, y))
 				{ // Dot at current pixel
 
-					uint8_t left = 0;
+					CompID left = 0;
 					if (x > 0) left = region->compMap[x-1][y];
 					else if (leftRegion) left = leftRegion->compMap[3][y];
 
 					if (top != 0 && left != 0)
 					{ // Two connected dots, assign and make sure both are merged
-						uint8_t topComp = resolveComponentMerge(top);
-						uint8_t leftComp = resolveComponentMerge(left);
+						CompID topComp = resolveComponentMerge(top);
+						CompID leftComp = resolveComponentMerge(left);
 						compID = topComp;
 
 						if (leftComp != topComp)
@@ -334,12 +346,15 @@ void performBlobDetectionCPU(std::vector<Cluster> &blobs)
 					}
 					else if (top == 0 && left == 0)
 					{ // No connected components from top or left, assign new component
-						compID = ++compIndex;
-						blobCompMerge[compID] = compID;
-						compNum++;
+						if (compIndex < MAX_COMPONENTS-1)
+						{
+							compID = ++compIndex;
+							blobCompMerge[compID] = compID;
+							compNum++;
 #ifdef BLOB_TRACE
-						std::cout << "Assigning new component ID " << (int)compID << "! Merge: " << (int)blobCompMerge[compID] << "\n";
+							std::cout << "Assigning new component ID " << (int)compID << "! Merge: " << (int)blobCompMerge[compID] << "\n";
 #endif
+						}
 					}
 					else
 					{ // One connected component to assign to
@@ -355,14 +370,19 @@ void performBlobDetectionCPU(std::vector<Cluster> &blobs)
 	}
 
 	// Merge all components (flatten merge hierarchy)
-	for (uint8_t i = 0; i < compIndex; i++)
+	for (int i = 0; i < compIndex; i++)
 	{
 		resolveComponentMerge(i);
 	}
 
+#ifdef BLOB_DEBUG
+	printf("Found %d initial merged components, with max %d!\n", compNum, compIndex);
+#endif
+
 	// Compile final cluster assignment
-	std::map<uint8_t, Cluster*> clusterTable;
+	std::map<CompID, Cluster*> clusterTable;
 	blobs.reserve(blobs.size() + compNum);
+
 	for (int i = 0; i < blobRegions.size(); i++)
 	{
 		Region *region = &blobRegions[i];
@@ -370,10 +390,10 @@ void performBlobDetectionCPU(std::vector<Cluster> &blobs)
 		{
 			for (int y = 0; y < 4; y++)
 			{
-				uint8_t compID = blobCompMerge[region->compMap[x][y]];
+				CompID compID = blobCompMerge[region->compMap[x][y]];
 				if (compID == 0) continue;
 				// Dot here
-				std::map<uint8_t, Cluster*>::iterator clusterSearch = clusterTable.find(compID);
+				auto clusterSearch = clusterTable.find(compID);
 				Cluster *cluster;
 				if (clusterSearch != clusterTable.end())
 				{ // Existing cluster for component
@@ -384,7 +404,7 @@ void performBlobDetectionCPU(std::vector<Cluster> &blobs)
 					blobs.push_back({});
 					cluster = &blobs[blobs.size()-1];
 					cluster->bounds = { .minX = maskW, .minY = maskH, .maxX = 0, .maxY = 0 };
-					clusterTable.insert(std::pair<uint8_t, Cluster*>(compID, cluster));
+					clusterTable.insert({ compID, cluster });
 #ifdef BLOB_TRACE
 					std::cout << "Generated new cluster " << blobs.size()-1 << " for component ID " << (int)compID << " (originally " << (int)region->compMap[x][y] << ")! Bytes: " << region->bytes <<  "!\n";
 #endif
@@ -404,6 +424,10 @@ void performBlobDetectionCPU(std::vector<Cluster> &blobs)
 		}
 	}
 
+#ifdef BLOB_DEBUG
+	printf("Found %d blobs!\n", blobs.size());
+#endif
+
 	// Finalize clusters and add to points
 	for (int i = 0; i < blobs.size(); i++)
 	{
@@ -413,10 +437,32 @@ void performBlobDetectionCPU(std::vector<Cluster> &blobs)
 		cluster->centroid.Y = cluster->centroid.Y / cluster->dots.size() + 0.5f;
 		//cluster->centroid.S = ((cluster->bounds.maxX-cluster->bounds.minX)+(cluster->bounds.maxY-cluster->bounds.minY))/2;
 		cluster->centroid.S = std::sqrt((float)cluster->dots.size()); // Nice approximation for circular blobs
-#ifdef BLOB_DEBUG
+#ifdef BLOB_TRACE
 		std::cout << "Cluster " << i << " had size " << cluster->centroid.S << " around " << cluster->centroid.X << " / " << cluster->centroid.Y << " with " << cluster->dots.size() << " dots!\n";
 #endif
 	}
+}
+
+void visualizeFrame(CamGL_Frame *frame)
+{
+	if (frame->format == CAMGL_RGB)
+	{
+		shaderCamBlitRGB->use();
+		bindExternalTexture(texBlitRGBAdr, frame->textureRGB, 0);
+	}
+	else if (frame->format == CAMGL_Y)
+	{
+		shaderCamBlitY->use();
+		bindExternalTexture(texBlitYAdrY, frame->textureY, 0);
+	}
+	else if (frame->format == CAMGL_YUV)
+	{
+		shaderCamBlitYUV->use();
+		bindExternalTexture(texBlitYUVAdrY, frame->textureY, 0);
+		bindExternalTexture(texBlitYUVAdrU, frame->textureU, 1);
+		bindExternalTexture(texBlitYUVAdrV, frame->textureV, 2);
+	}
+	SSQuad->draw();
 }
 
 /*
@@ -493,6 +539,9 @@ void cleanBlobDetection()
 	delete shaderESBlobEncode;
 	delete shaderESBlobViz;
 	delete shaderESPoint;
+	delete shaderCamBlitRGB;
+	delete shaderCamBlitYUV;
+	delete shaderCamBlitY;
 	// Render Targets
 	delete blobMask;
 	delete blobMap;
@@ -503,7 +552,6 @@ void cleanBlobDetection()
 	delete blobCompMerge;
 	delete mapRowZeros;
 	glDeleteBuffers(1, &vizPointsVBO);
-
 }
 
 /* Bind external EGL tex to adr using specified texture slot */
@@ -512,12 +560,11 @@ static void bindExternalTexture (GLuint adr, GLuint tex, int slot)
 	glUniform1i(adr, slot);
 	glActiveTexture(GL_TEXTURE0 + slot);
 	glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
-	CHECK_GL();
 }
 
-static uint8_t resolveComponentMerge(uint8_t compID)
+static CompID resolveComponentMerge(CompID compID)
 {
-	uint8_t id = blobCompMerge[compID];
+	CompID id = blobCompMerge[compID];
 	if (id != blobCompMerge[id])
 	{ // Resolve recursive merge hierarchy
 		while (id != blobCompMerge[id])
@@ -525,7 +572,7 @@ static uint8_t resolveComponentMerge(uint8_t compID)
 			id = blobCompMerge[id];
 		}
 		// Update all components on the way
-		uint8_t idIt = compID, idNxt;
+		CompID idIt = compID, idNxt;
 		while ((idNxt = blobCompMerge[idIt]) != id)
 		{
 			blobCompMerge[idIt] = id;

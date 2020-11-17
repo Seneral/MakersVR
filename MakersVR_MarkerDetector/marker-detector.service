@@ -1,0 +1,23 @@
+[Unit]
+Description=MakersVR Marker Detector service
+After=basic.target
+
+[Service]
+Type=simple
+
+WorkingDirectory=/home/pi/MakersVR_MarkerDetector/build
+ExecStart=/usr/bin/stdbuf -oL /home/pi/MakersVR_MarkerDetector/build/GLDetector -u
+#ExecStart=/home/pi/MakersVR_MarkerDetector/build/GLDetector -u 2>&1
+
+#StandardInput=null
+#StandardOutput=journal
+#StandardError=journal
+#StandardOutput=tty
+#TTYPath=/dev/tty1
+SyslogIdentifier=MakersVR
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
