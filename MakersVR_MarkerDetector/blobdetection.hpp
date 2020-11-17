@@ -19,9 +19,6 @@
  * without any association to 3D pose, and is completely unfiltered
  */
 
-// Maximum number of components supported
-// NOT blob number, fractured blobs could take up many components that are eventually merged together
-#define MAX_COMPONENTS 256
 
 /* Structures  */
 
@@ -62,11 +59,12 @@ typedef struct Color
 
 /* Functions */
 
-void initBlobDetection (int width, int height, EGL_Setup eglSetup);
-void performBlobDetection(CamGL_Frame *frame, std::vector<Cluster> &blobs);
+bool initBlobDetection (int width, int height, EGL_Setup eglSetup);
+void performBlobDetectionBlocking(CamGL_Frame *frame, std::vector<Cluster> &blobs);
 void performBlobDetectionGPU(CamGL_Frame *frame);
 void performBlobDetectionRegionsFetch();
 void performBlobDetectionCPU(std::vector<Cluster> &blobs);
+void visualizeFrame(CamGL_Frame *frame);
 void visualizeBlobDetection(const std::vector<Cluster> &blobs, Bounds viewBounds, float pixelDensity);
 void blobColorLookup (const std::vector<Point> &points, std::vector<Color> &colors);
 void cleanBlobDetection();

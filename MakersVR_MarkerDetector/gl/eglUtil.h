@@ -9,14 +9,6 @@ extern "C" {
 #include <EGL/egl.h>
 #include "bcm_host.h"
 
-#include "applog.h"
-
-#define CHECK_EVAL(EVAL, MSG, ERRHANDLER) \
-	if (!(EVAL)) { \
-		vcos_log_error(MSG); \
-		goto ERRHANDLER; \
-	}
-
 typedef struct EGL_Setup
 {
 	EGLDisplay display;
@@ -26,12 +18,37 @@ typedef struct EGL_Setup
 	int versionMajor;
 } EGL_Setup;
 
-int setupEGL(EGL_Setup *setup, EGLNativeWindowType window);
+typedef struct EGL_Window
+{
+	EGL_DISPMANX_WINDOW_T eglWindow;
+	DISPMANX_DISPLAY_HANDLE_T display;
+} EGL_Window;
 
+/*
+ * Create EGL setup rendering to pixelbuffer
+ */
+int setupEGLPBuffer(EGL_Setup *setup);
+
+/*
+ * Create EGL setup rendering to window on screen
+ ' If sharedSetup is provided, both setups will share their context
+ */
+int setupEGLWindow(EGL_Setup *setup, EGL_Window *window, EGL_Setup *sharedSetup);
+
+/*
+ * Cleanup EGL setup
+ */
 void terminateEGL(EGL_Setup *setup);
 
-/* Create native window (basically just a rectangle on the screen we can render to */
-int createNativeWindow(EGL_DISPMANX_WINDOW_T *window);
+/*
+ * Create native window with EGL element
+ */
+int createWindow(EGL_Window *window);
+
+/*
+ * Destroy native window with EGL element
+ */
+int destroyWindow(EGL_Window *window);
 
 #ifdef __cplusplus
 }

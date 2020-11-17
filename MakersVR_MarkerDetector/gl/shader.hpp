@@ -5,6 +5,8 @@
 
 #include <string>
 
+static const GLint vPosAdr = 0, vColAdr = 1, vUVAdr = 2, vNrmAdr = 3;
+
 /*
  * Read string file from disk
  */

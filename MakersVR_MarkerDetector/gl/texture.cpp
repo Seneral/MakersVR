@@ -1,4 +1,3 @@
-#include "defines.hpp"
 #include "texture.hpp"
 
 #include <iostream>
@@ -46,7 +45,7 @@ FrameRenderTarget::FrameRenderTarget (int Width, int Height, GLenum format, GLen
 	// Check
 	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 	{
-		std::cout << "Error: Framebuffer not complete: " << glCheckFramebufferStatus(GL_FRAMEBUFFER) << "\n";
+		std::cerr << "Error: Framebuffer not complete: " << glCheckFramebufferStatus(GL_FRAMEBUFFER) << "\n";
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
@@ -84,8 +83,7 @@ BufferRenderTarget::BufferRenderTarget (int Width, int Height, GLenum format)
 	// Check
 	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 	{
-		std::cout << "Error: Framebuffer not complete: " << glCheckFramebufferStatus(GL_FRAMEBUFFER) << "\n";
-		std::cout << "Width " << width << " height"  << height << "\n";
+		std::cerr << "Error: Framebuffer not complete: " << glCheckFramebufferStatus(GL_FRAMEBUFFER) << "\n";
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
@@ -114,8 +112,6 @@ VCSMRenderTarget::VCSMRenderTarget (int Width, int Height, EGLDisplay Display)
 	height = Height;
 	bufferWidth = nextPOT(width);
 	bufferHeight = nextPOT(height);
-	std::cout << "Texture Size " << width << "x" << height << std::endl;
-	std::cout << "Buffer Size " << bufferWidth << "x" << bufferHeight << std::endl;
 	eglDisplay = Display;
 	// Framebuffer
 	glGenFramebuffers(1, &FBO_ID);
@@ -127,29 +123,31 @@ VCSMRenderTarget::VCSMRenderTarget (int Width, int Height, EGLDisplay Display)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST); // GL_LINEAR / GL_NEAREST
 	// Allocate VCOS Shared Memory and assign to texture
 	VCSM.width = bufferWidth;
-    VCSM.height = bufferHeight;
-    eglImg = eglCreateImageKHR(eglDisplay, EGL_NO_CONTEXT, EGL_IMAGE_BRCM_VCSM, &VCSM, NULL);
-	CHECK_GL();
-    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, eglImg);
+	VCSM.height = bufferHeight;
+	eglImg = eglCreateImageKHR(eglDisplay, EGL_NO_CONTEXT, EGL_IMAGE_BRCM_VCSM, &VCSM, NULL);
+	if (eglImg == EGL_NO_IMAGE_KHR || VCSM.vcsm_handle == 0)
+	{
+		std::cerr << VCOS_FUNCTION << ": Failed to create EGL VCSM image\n";
+		return;
+	}
+	glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, eglImg);
 
 	VCSM_CACHE_TYPE_T cacheType;
 	vcsmBuffer = (uint8_t*)vcsm_lock_cache(VCSM.vcsm_handle, VCSM_CACHE_TYPE_HOST, &cacheType);
+	if (!vcsmBuffer)
+	{
+		std::cerr << VCOS_FUNCTION << ": Failed to lock EGL VCSM image buffer\n";
+		return;
+	}
 	memset(vcsmBuffer, 0, bufferWidth * bufferHeight * 2);
 	vcsm_unlock_ptr(vcsmBuffer);
 
-	CHECK_GL();
 	// Bind texture to framebuffer
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, TEX_ID, 0);
-	if (eglImg == EGL_NO_IMAGE_KHR || VCSM.vcsm_handle == 0)
-    {
-        std::cout << VCOS_FUNCTION << ": Failed to create EGL VCSM image\n";
-        return;
-	}
-	CHECK_GL();
-	// Check
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, TEX_ID, 0);
 	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 	{
-		std::cout << "Error: Framebuffer not complete: " << glCheckFramebufferStatus(GL_FRAMEBUFFER) << "\n";
+		std::cerr << "Error: Framebuffer not complete: " << glCheckFramebufferStatus(GL_FRAMEBUFFER) << "\n";
+		return;
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
@@ -176,8 +174,8 @@ uint8_t* VCSMRenderTarget::lock (void)
 {
 	VCSM_CACHE_TYPE_T cacheType;
 	vcsmBuffer = (uint8_t*)vcsm_lock_cache(VCSM.vcsm_handle, VCSM_CACHE_TYPE_HOST, &cacheType);
-    if (!vcsmBuffer) std::cout << "Failed to lock VCSM buffer!\n";
-    return vcsmBuffer;
+	if (!vcsmBuffer) std::cerr << "Failed to lock VCSM buffer!\n";
+	return vcsmBuffer;
 }
 void VCSMRenderTarget::unlock (void)
 {

@@ -1,7 +1,5 @@
 #include "shader.hpp"
 
-#include "defines.hpp"
-
 #include <iostream>
 #include <fstream>
 #include <cstring>
@@ -34,6 +32,7 @@ std::string readFile(const char *filePath)
 GLuint loadShader (const char* fileName, int type)
 {
 	std::string shaderSrcStr = readFile(fileName);
+	if (shaderSrcStr.empty()) return 0;
 	const char* shaderSrc = shaderSrcStr.c_str();
 	GLuint shader = glCreateShader(type);
 	if (shader == 0)
