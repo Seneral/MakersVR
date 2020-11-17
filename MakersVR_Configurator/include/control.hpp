@@ -4,8 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#ifndef DEF_CONTROL
-#define DEF_CONTROL
+#ifndef CONTROL_H
+#define CONTROL_H
 
 #include "eigenutil.hpp"
 #include "calibration.hpp"
@@ -23,11 +23,21 @@
 enum ControlPhase
 {
 	PHASE_None = 0,
+	PHASE_Idle,
 	PHASE_Calibration_Intrinsic,
 	PHASE_Calibration_Extrinsic,
 	PHASE_Calibration_Room,
 	PHASE_Calibration_Marker,
 	PHASE_Tracking
+};
+
+template <typename T>
+struct IterativeParam
+{
+	T start, factor, summand, current;
+	void reset() { current = start; }
+	T get() { return current; }
+	T iterate() { return current = current*factor+summand; }
 };
 
 /**
@@ -41,18 +51,19 @@ struct CameraState
 	std::vector<float> pointSizes; // Points2D input
 	struct { // Single-Camera state (Intrinsic calibration)
 		std::vector<Marker2D> calibrationSelection;
-		float markerSelectionThreshold;
+		IterativeParam<float> selectionThreshold;
+		IterativeParam<int> maxMarkerCount;
 		// Current frame state
 		std::vector<Marker2D> markers;
 		std::vector<int> freeBlobs;
 		// Radial marker condition
-		std::multimap<float,uint16_t> markerRadialLookup;
-		float markerDensityTarget;
-		float markerDensityGranularity;
+		std::multimap<float,uint16_t> radialLookup;
+		IterativeParam<float> radialDensityGranularity;
+		IterativeParam<float> radialDensityTarget;
 		// Spatial marker condition
-		std::vector<std::vector<uint16_t>> markerGridBuckets;
-		int markerGridSize;
-		int markerGridCountTarget;
+		std::vector<std::vector<uint16_t>> gridBuckets;
+		int gridSize;
+		IterativeParam<int> gridCountTarget;
 		// Threaded calibration round
 		std::vector<double> calibrationMarkerErrors;
 		std::thread *calibrationThread;
@@ -87,7 +98,7 @@ struct CameraState
 	} testing;
 };
 
-struct TrackingState
+struct ControlState
 {
 	enum ControlPhase lastPhase;
 	enum ControlPhase phase;
@@ -131,27 +142,27 @@ struct TrackingState
 /**
  * Finalize the current phase and return to the idle phase
  */
-void FinalizePhase(TrackingState *state);
+void FinalizePhase(ControlState *state);
 
 /**
  * Discard the current phase and return to the idle phase
  */
-void DiscardPhase(TrackingState *state);
+void DiscardPhase(ControlState *state);
 
 /**
  * Enters the specified phase from the idle phase
  */
-void EnterPhase(TrackingState *state, ControlPhase phase);
+void EnterPhase(ControlState *state, ControlPhase phase);
 
 /**
  * Enters the next phase, discarding any unfinalized current phases
  */
-void NextPhase(TrackingState *state);
+void NextPhase(ControlState *state);
 
 /**
  * Handles a new frame
  */
-void HandleCameraState(TrackingState *state);
+void HandleCameraState(ControlState *state);
 
 
-#endif
+#endif // CONTROL_H

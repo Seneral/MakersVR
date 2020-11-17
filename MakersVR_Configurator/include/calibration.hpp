@@ -4,13 +4,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#ifndef DEF_CALIBRATION
-#define DEF_CALIBRATION
+#ifndef CALIBRATION_H
+#define CALIBRATION_H
 
-#define MAX_POSE_MSE 0.4f*0.4f
+#define MAX_POSE_MSE 1 //0.4f*0.4f
 
 #include "eigenutil.hpp"
-#include "util.hpp" // DefMarker
 
 #include <vector>
 #include <map>
@@ -97,7 +96,7 @@ float calculateMSE(const Eigen::Isometry3f &pose3D, const Camera &camera, const 
 /**
  * Adds transform to a candidate within error margin or creates a new one
  */
-int AddTransformToCandidates (std::vector<TransformCandidate> &candidates, Eigen::Isometry3f transform, float weight, float maxTError, float maxRError);
+int AddTransformToCandidates(std::vector<TransformCandidate> &candidates, Eigen::Isometry3f transform, float weight, float maxTError, float maxRError);
 
 /**
  * Choose transform canidate among the given candidates with the most weight
@@ -112,7 +111,7 @@ void calculateCameraTransforms(std::vector<TransformSample*> &origins, std::vect
 /**
  * Adds markers that add value to the calibration to the calibration selection and adjusts selection parameters
  */
-bool selectMarkersForCalibration(const Camera &camera, const DefMarker &markerTemplate2D, const std::vector<Marker2D> &markers, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, float radialGranularity, float radialTarget, std::vector<std::vector<uint16_t>> &gridBuckets, int gridSize, int gridTarget, float *threshold, int m);
+bool selectMarkersForCalibration(const Camera &camera, const DefMarker &markerTemplate2D, const std::vector<Marker2D> &markers, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, float radialGranularity, float radialTarget, std::vector<std::vector<uint16_t>> &gridBuckets, int gridSize, int gridTarget, float threshold, int m);
 
 
 /**
@@ -123,6 +122,6 @@ float calculateIntrinsicCalibration(Camera &camera, const std::vector<Marker2D> 
 /**
  * Takes the calibration selection and filters them using the errors from the last calibration round
  */
-void filterMarkersForCalibration(const Camera &camera, const std::vector<double> &errors, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, std::vector<std::vector<uint16_t>> &gridBuckets, int m);
+void filterMarkersForCalibration(const Camera &camera, const std::vector<double> &errors, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, std::vector<std::vector<uint16_t>> &gridBuckets);
 
-#endif
+#endif // CALIBRATION_H

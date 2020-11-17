@@ -24,7 +24,7 @@
 #include <windows.h>
 
 #include "comm.hpp"
-#include "util.hpp"
+#include "util.hpp" // StatValue
 
 CommState commState;
 
@@ -40,9 +40,9 @@ inline void printBuffer(uint8_t *buffer, uint8_t size)
 	for (int i = 0; i < size; i++) printf("%02X", buffer[i]);
 }
 
-static void onControlResponse(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length);
-static void onIsochronousIN(uint8_t *data, int length);
-static void onInterruptIN(uint8_t *data, int length);
+static void onControlResponse(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length, void *userData);
+static void onIsochronousIN(uint8_t *data, int length, void *userData);
+static void onInterruptIN(uint8_t *data, int length, void *userData);
 
 int main(int argc, char **argv)
 {
@@ -100,7 +100,7 @@ int main(int argc, char **argv)
 	return 0;	
 }
 
-static void onControlResponse(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length)
+static void onControlResponse(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length, void *userData)
 {
 	if (request == 0x01) 
 	{ // Debug Response
@@ -122,7 +122,7 @@ static void onControlResponse(uint8_t request, uint16_t value, uint16_t index, u
 	}
 }
 
-static void onIsochronousIN(uint8_t *data, int length)
+static void onIsochronousIN(uint8_t *data, int length, void *userData)
 {
 	
 #ifdef MEASURE_RECEIVE_RATE
@@ -181,7 +181,7 @@ static void onIsochronousIN(uint8_t *data, int length)
 #endif
 }
 
-static void onInterruptIN(uint8_t *data, int length)
+static void onInterruptIN(uint8_t *data, int length, void *userData)
 {
 #ifdef MEASURE_RECEIVE_RATE
 	g_receiveCount++;

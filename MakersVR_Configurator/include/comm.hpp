@@ -15,24 +15,27 @@ struct libusb_state;
 struct CommState
 {
 	libusb_state *libusb;
-	std::atomic<bool> usbDeviceActive;
-	std::atomic<bool> intINPending;
-	std::atomic<bool> ctrlINPending;
-	std::atomic<bool> ctrlOUTPending;
+	std::atomic<bool> usbDeviceActive = { false };
+	std::atomic<bool> intINPending = { false };
+	std::atomic<bool> ctrlINPending = { false };
+	std::atomic<bool> ctrlOUT1Pending = { false };
+	std::atomic<bool> ctrlOUT2Pending = { false };
 
-	void (*onControlResponse)(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length);
-	void (*onIsochronousIN)(uint8_t *data, int length);
-	void (*onInterruptIN)(uint8_t *data, int length);
+	void *userData;
+	void (*onControlResponse)(uint8_t request, uint16_t value, uint16_t index, uint8_t *data, int length, void *userData);
+	void (*onIsochronousIN)(uint8_t *data, int length, void *userData);
+	void (*onInterruptIN)(uint8_t *data, int length, void *userData);
 };
 
 bool comm_init(CommState *state);
 bool comm_check_device(CommState *state);
 bool comm_connect(CommState *state, bool altSetting);
 bool comm_disconnect(CommState *state);
+bool comm_startStream(CommState *state);
+bool comm_stopStream(CommState *state);
 void comm_exit(CommState *state);
 
 bool comm_submit_control_request(CommState *state, uint8_t request, uint16_t value, uint16_t index);
-uint8_t* comm_get_control_data(); // Returns the buffer to write control data to
-bool comm_submit_control_data(CommState *state, uint8_t request, uint16_t value, uint16_t index);
+bool comm_submit_control_data(CommState *state, uint8_t request, uint16_t value, uint16_t index, void* data = NULL, uint8_t size = 0);
 
 #endif // COMM_H

@@ -5,39 +5,52 @@
  */
 
 #include "control.hpp"
+#include "config.hpp"
 
 #include "wxbase.hpp" // wxLog*
 
+// ----------------------------------------------------------------------------
+// Function Prototypes
+// ----------------------------------------------------------------------------
 
-static void InitCalibrationIntrinsic(TrackingState *state);
-static void FinalizeCalibrationIntrinsic(TrackingState *state);
-static void DiscardCalibrationIntrinsic(TrackingState *state);
+// Intrinsic
+static void InitCalibrationIntrinsic(ControlState *state);
+static void FinalizeCalibrationIntrinsic(ControlState *state);
+static void DiscardCalibrationIntrinsic(ControlState *state);
+static void UpdateCalibrationIntrinsic(ControlState *state);
+static void ThreadCalibrationIntrinsic(ControlState *state, CameraState *cam);
 
-static void InitCalibrationExtrinsic(TrackingState *state);
-static void FinalizeCalibrationExtrinsic(TrackingState *state);
-static void DiscardCalibrationExtrinsic(TrackingState *state);
+// Extrinsic
+static void InitCalibrationExtrinsic(ControlState *state);
+static void FinalizeCalibrationExtrinsic(ControlState *state);
+static void DiscardCalibrationExtrinsic(ControlState *state);
+static void UpdateCalibrationExtrinsic(ControlState *state);
 
-static void InitCalibrationRoom(TrackingState *state);
-static void FinalizeCalibrationRoom(TrackingState *state);
-static void DiscardCalibrationRoom(TrackingState *state);
+// Room
+static void InitCalibrationRoom(ControlState *state);
+static void FinalizeCalibrationRoom(ControlState *state);
+static void DiscardCalibrationRoom(ControlState *state);
+static void UpdateCalibrationRoom(ControlState *state);
 
-static void InitCalibrationMarker(TrackingState *state);
-static void FinalizeCalibrationMarker(TrackingState *state);
-static void DiscardCalibrationMarker(TrackingState *state);
+// Marker
+static void InitCalibrationMarker(ControlState *state);
+static void FinalizeCalibrationMarker(ControlState *state);
+static void DiscardCalibrationMarker(ControlState *state);
+static void UpdateCalibrationMarker(ControlState *state);
 
-static void UpdateTrackedCalibrationMarker(TrackingState *state);
-static void UpdateCameraRelationCandidates(TrackingState *state);
-static void UpdateRoomOriginCandidates(TrackingState *state);
-static void UpdateIntrinsicCalibration(TrackingState *state);
-static void UpdateCalibratedMarkerTemplate(TrackingState *state);
+// General 3D and 2D Tracking
+static void TrackMarkers3D(ControlState *state);
+static void TrackMarkers2D(ControlState *state);
+static void UndistortPoints(ControlState *state);
 
-static void TrackMarkers(TrackingState *state);
+// + Exposed Phase control
 
-static void UndistortPoints(TrackingState *state);
 
-static void CalibrationThreadFunction(TrackingState *state, CameraState *cam);
+// ----------------------------------------------------------------------------
+// Intrinsic Calibration
+// ----------------------------------------------------------------------------
 
-static void InitCalibrationIntrinsic(TrackingState *state)
+static void InitCalibrationIntrinsic(ControlState *state)
 {
 	for (int m = 0; m < state->cameras.size(); m++)
 	{
@@ -46,24 +59,24 @@ static void InitCalibrationIntrinsic(TrackingState *state)
 		cam->intrinsic.calibrationFinished = false;
 		cam->intrinsic.calibrationRunning = false;
 		cam->intrinsic.calibrationMarkerCount = 0;
+		cam->intrinsic.selectionThreshold.reset();
+		cam->intrinsic.maxMarkerCount.reset();
 		// Setup radial lookup for radial control of marker selection
-		cam->intrinsic.markerRadialLookup.clear();
-		cam->intrinsic.markerDensityTarget = 1.0f;
-		cam->intrinsic.markerSelectionThreshold = 2.0f;
-		cam->intrinsic.markerDensityGranularity = 0.10f;
+		cam->intrinsic.radialLookup.clear();
+		cam->intrinsic.radialDensityGranularity.reset();
+		cam->intrinsic.radialDensityTarget.reset();
 		// Setup grid bucket for spacial control of marker selection
-		cam->intrinsic.markerGridSize = 5;
-		cam->intrinsic.markerGridCountTarget = 2;
-		cam->intrinsic.markerGridBuckets.resize(cam->intrinsic.markerGridSize*cam->intrinsic.markerGridSize);
-		for (int i = 0; i < cam->intrinsic.markerGridBuckets.size(); i++)
+		cam->intrinsic.gridCountTarget.reset();
+		cam->intrinsic.gridBuckets.resize(cam->intrinsic.gridSize*cam->intrinsic.gridSize);
+		for (int i = 0; i < cam->intrinsic.gridBuckets.size(); i++)
 		{
-			cam->intrinsic.markerGridBuckets[i].clear();
-			cam->intrinsic.markerGridBuckets[i].reserve(100);
+			cam->intrinsic.gridBuckets[i].clear();
+			cam->intrinsic.gridBuckets[i].reserve(100);
 		}
 	}
 }
 
-static void FinalizeCalibrationIntrinsic(TrackingState *state)
+static void FinalizeCalibrationIntrinsic(ControlState *state)
 {
 	for (int m = 0; m < state->cameras.size(); m++)
 	{
@@ -75,9 +88,14 @@ static void FinalizeCalibrationIntrinsic(TrackingState *state)
 	{
 		CameraState *cam = &state->cameras[m];
 
+//		if (cam->intrinsic.calibrationRunning && cam->intrinsic.calibrationThread->joinable())
+//			cam->intrinsic.calibrationThread->join();
+//		if (cam->intrinsic.calibrationRunning && cam->intrinsic.calibrationThread->joinable())
+//			cam->intrinsic.calibrationThread->std::thread::~thread();
+//		if (cam->intrinsic.calibrationThread != nullptr)
+//			delete cam->intrinsic.calibrationThread;
 		if (cam->intrinsic.calibrationRunning && cam->intrinsic.calibrationThread->joinable())
-			cam->intrinsic.calibrationThread->join();
-		delete cam->intrinsic.calibrationThread;
+			cam->intrinsic.calibrationThread->detach();
 		cam->intrinsic.calibrationThread = nullptr;
 		cam->intrinsic.calibrationRunning = false;
 		cam->intrinsic.calibrationFinished = false;
@@ -86,17 +104,111 @@ static void FinalizeCalibrationIntrinsic(TrackingState *state)
 	}
 }
 
-static void DiscardCalibrationIntrinsic(TrackingState *state)
+static void DiscardCalibrationIntrinsic(ControlState *state)
 {
 	for (int m = 0; m < state->cameras.size(); m++)
 	{
 		CameraState *cam = &state->cameras[m];
-		cam->intrinsic.markerRadialLookup.clear();
-		cam->intrinsic.markerGridBuckets.clear();
+		cam->intrinsic.radialLookup.clear();
+		cam->intrinsic.gridBuckets.clear();
 	}
 }
 
-static void InitCalibrationExtrinsic(TrackingState *state)
+static void UpdateCalibrationIntrinsic(ControlState *state)
+{
+	for (int m = 0; m < state->cameras.size(); m++)
+	{
+		CameraState *cam = &state->cameras[m];
+
+		cam->intrinsic.markers.clear();
+		cam->intrinsic.freeBlobs.clear();
+
+		if (!isMarkerBuiltIn(state->calibration.markerTemplate2D->id))
+		{ // Skip detection for testing markers (there's no detection algorithm for them)
+			if (cam->points2D.size() >= state->calibration.markerTemplate2D->points.size())
+			{ // Assume all points visible belong to singular marker and are kept ordered (not shuffled)
+				cam->intrinsic.markers.push_back(Marker2D(state->calibration.markerTemplate2D->id, cam->points2D.size()));
+				std::copy(cam->points2D.begin(), cam->points2D.end(), cam->intrinsic.markers[0].points.begin());
+			}
+		}
+		else // Detect built-in markers
+			findMarkerCandidates(cam->points2D, cam->pointSizes, cam->intrinsic.markers, cam->intrinsic.freeBlobs);
+	}
+
+	for (int m = 0; m < state->cameras.size(); m++)
+	{
+		CameraState *cam = &state->cameras[m];
+
+		// Calibration phase finalized, don't start new calibration rounds
+		if (cam->intrinsic.calibrationStopped) continue;
+
+		if (!cam->intrinsic.calibrationRunning)
+		{ // No updates while calibration is running
+
+			// Select markers for next calibration round
+			int prevCnt = cam->intrinsic.calibrationSelection.size();
+			bool calibReady = selectMarkersForCalibration(cam->camera, *state->calibration.markerTemplate2D, cam->intrinsic.markers, cam->intrinsic.calibrationSelection,
+				cam->intrinsic.radialLookup, cam->intrinsic.radialDensityGranularity.get(), cam->intrinsic.radialDensityTarget.get(),
+				cam->intrinsic.gridBuckets, cam->intrinsic.gridSize, cam->intrinsic.gridCountTarget.get(),
+				cam->intrinsic.selectionThreshold.get(), m);
+			int cnt = cam->intrinsic.calibrationSelection.size();
+			//if (prevCnt == cnt) cam->intrinsic.selectionThreshold.current *= 0.8f;
+
+			// Start calibration round
+			if (cnt > 10 /*&& cnt >= cam->intrinsic.calibrationMarkerCount+10*/ && (calibReady || cnt >= cam->intrinsic.maxMarkerCount.get()))
+			{
+				wxLogMessage("Cam %d starting calibration with %d points!", m, cnt);
+
+				// Start calibration thread
+				cam->intrinsic.calibrationRunning = true;
+				cam->intrinsic.calibrationFinished = false;
+				cam->intrinsic.calibrationMarkerCount = cnt;
+				cam->intrinsic.calibrationThread = new std::thread(ThreadCalibrationIntrinsic, state, cam);
+			}
+		}
+		else if (cam->intrinsic.calibrationFinished)
+		{ // Finished last calibration round
+
+			// Stop thread
+			if (cam->intrinsic.calibrationThread->joinable())
+				cam->intrinsic.calibrationThread->join();
+			delete cam->intrinsic.calibrationThread;
+			cam->intrinsic.calibrationThread = nullptr;
+			cam->intrinsic.calibrationRunning = false;
+			cam->intrinsic.calibrationFinished = false;
+
+			wxLogMessage("Cam %d calibration: %d points, FoV (%f, %f), Distortions (%f, %f, %f, %f, %f)", m, (int)cam->intrinsic.calibrationSelection.size(), cam->camera.fovH, cam->camera.fovV, cam->camera.distortion.k1, cam->camera.distortion.k2, cam->camera.distortion.p1, cam->camera.distortion.p2, cam->camera.distortion.k3);
+
+			// Filter out markers that had a high error
+			int prevCnt = cam->intrinsic.calibrationSelection.size();
+			filterMarkersForCalibration(cam->camera, cam->intrinsic.calibrationMarkerErrors, cam->intrinsic.calibrationSelection, cam->intrinsic.radialLookup, cam->intrinsic.gridBuckets);
+			int worstCnt = prevCnt - cam->intrinsic.calibrationSelection.size();
+			wxLogMessage("Cam %d worst %d markers removed:", m, worstCnt);
+
+			// Adapt parameters for next round
+			cam->intrinsic.selectionThreshold.iterate();
+			cam->intrinsic.maxMarkerCount.iterate();
+			cam->intrinsic.radialDensityGranularity.iterate();
+			cam->intrinsic.radialDensityTarget.iterate();
+			cam->intrinsic.gridCountTarget.iterate();
+		}
+	}
+}
+
+static void ThreadCalibrationIntrinsic(ControlState *state, CameraState *cam)
+{
+	cam->intrinsic.calibrationRunning = true;
+	cam->intrinsic.calibrationFinished = false;
+	calculateIntrinsicCalibration(cam->camera, cam->intrinsic.calibrationSelection, *state->calibration.markerTemplate2D, cam->intrinsic.calibrationMarkerErrors);
+	cam->intrinsic.calibrationFinished = true;
+}
+
+
+// ----------------------------------------------------------------------------
+// Extrinsic Calibration
+// ----------------------------------------------------------------------------
+
+static void InitCalibrationExtrinsic(ControlState *state)
 {
 	for (int m = 0; m < state->cameras.size(); m++)
 		state->cameras[m].extrinsic.relations.resize(state->cameras.size());
@@ -123,7 +235,7 @@ static void InitCalibrationExtrinsic(TrackingState *state)
 	}
 }
 
-static void FinalizeCalibrationExtrinsic(TrackingState *state)
+static void FinalizeCalibrationExtrinsic(ControlState *state)
 {
 	for (int r = 0; r < state->calibration.relations.size(); r++)
 	{
@@ -134,20 +246,67 @@ static void FinalizeCalibrationExtrinsic(TrackingState *state)
 	}
 }
 
-static void DiscardCalibrationExtrinsic(TrackingState *state)
+static void DiscardCalibrationExtrinsic(ControlState *state)
 {
 	state->calibration.relations.clear();
 	for (int m = 0; m < state->cameras.size(); m++)
 		state->cameras[m].extrinsic.relations.clear();
 }
 
-static void InitCalibrationRoom(TrackingState *state)
+static void UpdateCalibrationExtrinsic(ControlState *state)
+{
+	for (int r = 0; r < state->calibration.relations.size(); r++)
+	{
+		CameraRelation *rel = &state->calibration.relations[r];
+		CameraState *camA = &state->cameras[rel->camA];
+		CameraState *camB = &state->cameras[rel->camB];
+
+		for (int a = 0; a < camA->extrinsic.poses.size(); a++)
+		{
+			if (camA->extrinsic.posesMSE[a] > MAX_POSE_MSE) continue;
+			const Eigen::Isometry3f poseA = camA->extrinsic.poses[a];
+			for (int b = 0; b < camB->extrinsic.poses.size(); b++)
+			{
+				if (camB->extrinsic.posesMSE[b] > MAX_POSE_MSE) continue;
+				// Datapoint (Transformation from camera a to camera b)
+				const Eigen::Isometry3f poseB = camB->extrinsic.poses[b];
+				Eigen::Isometry3f transAB = poseA * poseB.inverse();
+				// Weight of datapoint
+				float distA = poseA.translation().norm(), rotA = std::abs(Eigen::AngleAxisf(poseA.rotation()).angle())/PI*2;
+				float distB = poseB.translation().norm(), rotB = std::abs(Eigen::AngleAxisf(poseB.rotation()).angle())/PI*2;
+				float weight = distA * (1+rotA) + distB * (1+rotB);
+				weight = 1000.0f/(weight*weight);
+				// Add to suitable candidate
+				int candidateInd = AddTransformToCandidates(rel->candidates, transAB, weight, 20, 2);
+
+				{ // Debug
+					// Calculate error between data point / candidate and ground truth
+					Eigen::Isometry3f transABGT = camA->camera.transform.inverse() * camB->camera.transform;
+					TransformCandidate *candidate = &rel->candidates[candidateInd];
+					std::pair<float,float> poseError = calculatePoseError(transABGT, transAB);
+					std::pair<float,float> candError = calculatePoseError(transABGT, candidate->transform);
+					// Debug
+					wxLogMessage("Cam Rel %d-%d: (%.4fmm, %.4f\u00B0) => (%.4fmm, %.4f\u00B0, %d, %d, %.4f)", rel->camA, rel->camB, poseError.first*10, poseError.second, candError.first*10, candError.second, candidateInd, (int)candidate->datapoints.size(), candidate->weight);
+				}
+
+
+			}	
+		}
+	}
+}
+
+
+// ----------------------------------------------------------------------------
+// Room Calibration
+// ----------------------------------------------------------------------------
+
+static void InitCalibrationRoom(ControlState *state)
 {
 	for (int m = 0; m < state->cameras.size(); m++)
 		state->cameras[m].extrinsic.originCandidates.clear();
 }
 
-static void FinalizeCalibrationRoom(TrackingState *state)
+static void FinalizeCalibrationRoom(ControlState *state)
 {
 	// Pick best origin candidates and compile relations and origin samples
 	std::vector<TransformSample*> origins (state->cameras.size());
@@ -191,7 +350,7 @@ static void FinalizeCalibrationRoom(TrackingState *state)
 	}
 }
 
-static void DiscardCalibrationRoom(TrackingState *state)
+static void DiscardCalibrationRoom(ControlState *state)
 {
 	state->calibration.relations.clear();
 	for (int m = 0; m < state->cameras.size(); m++)
@@ -202,7 +361,41 @@ static void DiscardCalibrationRoom(TrackingState *state)
 	}
 }
 
-static void InitCalibrationMarker(TrackingState *state)
+static void UpdateCalibrationRoom(ControlState *state)
+{
+	for (int m = 0; m < state->cameras.size(); m++)
+	{
+		CameraState *cam = &state->cameras[m];
+		for (int p = 0; p < cam->extrinsic.poses.size(); p++)
+		{
+			if (cam->extrinsic.posesMSE[p] > MAX_POSE_MSE) continue;
+			// Datapoint (Transformation from camera to origin)
+			const Eigen::Isometry3f pose = cam->extrinsic.poses[p];
+			// Weight of datapoint
+			float dist = pose.translation().norm(), rot = std::abs(Eigen::AngleAxisf(pose.rotation()).angle())/PI*2;
+			float weight = dist * (1+rot);
+			weight = 1000.0f/(weight*weight);
+			// Add to suitable candidate
+			int candidateInd = AddTransformToCandidates(cam->extrinsic.originCandidates, pose, weight, 5, 1);
+			
+			{ // Debug
+				// Calculate error between data point / candidate and ground truth
+				TransformCandidate *candidate = &cam->extrinsic.originCandidates[candidateInd];
+				std::pair<float,float> poseError = calculatePoseError(cam->camera.transform.inverse(), cam->extrinsic.poses[p]);
+				std::pair<float,float> candError = calculatePoseError(cam->camera.transform.inverse(), candidate->transform);
+				// Debug
+				wxLogMessage("Cam %d origin: (%.4fmm, %.4f\u00B0) => (%.4fmm, %.4f\u00B0, %d, %d, %.4f)", m, poseError.first*10, poseError.second, candError.first*10, candError.second, candidateInd, (int)candidate->datapoints.size(), candidate->weight);
+			}
+		}
+	}
+}
+
+
+// ----------------------------------------------------------------------------
+// Marker Calibration
+// ----------------------------------------------------------------------------
+
+static void InitCalibrationMarker(ControlState *state)
 {
 	state->markerCalib.iteration = 0;
 	state->markerCalib.iterativeMarker.points.clear();
@@ -212,7 +405,7 @@ static void InitCalibrationMarker(TrackingState *state)
 	state->markerCalib.markerPointRating.clear();
 }
 
-static void FinalizeCalibrationMarker(TrackingState *state)
+static void FinalizeCalibrationMarker(ControlState *state)
 {
 	// Remove points with lower confidence
 	float maxConfidence = std::max_element(state->markerCalib.markerPointRating.begin(), state->markerCalib.markerPointRating.end(), [](auto &a, auto &b){ return a.first < b.first; })->first;
@@ -253,7 +446,7 @@ static void FinalizeCalibrationMarker(TrackingState *state)
 	generateLookupTables(marker);
 }
 
-static void DiscardCalibrationMarker(TrackingState *state)
+static void DiscardCalibrationMarker(ControlState *state)
 {
 	state->markerCalib.iterativeMarker.points.clear();
 	state->markerCalib.iterativeMarker.pointRelation.clear();
@@ -262,359 +455,7 @@ static void DiscardCalibrationMarker(TrackingState *state)
 	state->markerCalib.markerPointRating.clear();
 }
 
-/**
- * Finalize the current phase and return to the idle phase
- */
-void FinalizePhase(TrackingState *state)
-{
-	if (state->phase == PHASE_None) return;
-
-	// Finalize current phase
-	bool writeCalibration = false;
-	if (state->phase == PHASE_Calibration_Intrinsic)
-	{
-		FinalizeCalibrationIntrinsic(state);
-		writeCalibration = true;
-	}
-	else if (state->phase == PHASE_Calibration_Extrinsic)
-	{
-		FinalizeCalibrationExtrinsic(state);
-	}
-	else if (state->phase == PHASE_Calibration_Room)
-	{
-		FinalizeCalibrationRoom(state);
-		writeCalibration = true;
-	}
-	else if (state->phase == PHASE_Calibration_Marker)
-	{
-		FinalizeCalibrationMarker(state);
-		writeCalibration = true;
-	}
-
-	// Write results of current phase
-	if (writeCalibration)
-	{
-		std::vector<Camera> cameraCalibrations(state->cameras.size());
-		for (int i = 0; i < state->cameras.size(); i++)
-			cameraCalibrations[i] = state->cameras[i].camera;
-		std::vector<MarkerTemplate3D> markerTemplates;
-		markerTemplates.reserve(state->tracking.markerTemplates3D.size());
-		for (int i = 0; i < state->tracking.markerTemplates3D.size(); i++)
-			if (state->tracking.markerTemplates3D[i].id >= 0)
-				markerTemplates.push_back(state->tracking.markerTemplates3D[i]);
-		writeCalibrationFile("config/calib.json", cameraCalibrations, markerTemplates);
-	}
-
-	// Return to idle phase
-	state->lastPhase = state->phase;
-	state->phase = PHASE_None;
-}
-
-/**
- * Discard the current phase and return to the idle phase
- */
-void DiscardPhase(TrackingState *state)
-{
-	if (state->phase == PHASE_None)
-		return;
-
-	// Init next phase
-	if (state->phase == PHASE_Calibration_Intrinsic)
-		DiscardCalibrationIntrinsic(state);
-	else if (state->phase == PHASE_Calibration_Extrinsic)
-		DiscardCalibrationExtrinsic(state);
-	else if (state->phase == PHASE_Calibration_Room)
-		DiscardCalibrationRoom(state);
-	else if (state->phase == PHASE_Calibration_Marker)
-		DiscardCalibrationMarker(state);
-
-	// Return to idle phase
-	state->lastPhase = state->phase;
-	state->phase = PHASE_None;
-}
-
-/**
- * Enters the specified phase from the idle phase
- */
-void EnterPhase(TrackingState *state, ControlPhase phase)
-{
-	if (state->phase != PHASE_None)
-	{
-		wxLogError("Already in a phase!");
-		return;
-	}
-
-	// Enter phase
-	state->lastPhase = state->phase;
-	state->phase = phase;
-
-	// Init phase
-	if (phase == PHASE_Calibration_Intrinsic)
-		InitCalibrationIntrinsic(state);
-	else if (phase == PHASE_Calibration_Extrinsic)
-		InitCalibrationExtrinsic(state);
-	else if (phase == PHASE_Calibration_Room)
-		InitCalibrationRoom(state);
-	else if (phase == PHASE_Calibration_Marker)
-		InitCalibrationMarker(state);
-}
-
-
-/**
- * Enters the next phase, discarding any unfinalized current phases
- */
-void NextPhase(TrackingState *state)
-{
-	if (state->lastPhase == PHASE_Tracking || state->phase == PHASE_Tracking)
-	{
-		wxLogError("Tracking is final phase!");
-		return;
-	}
-	if (state->phase != PHASE_None)
-	{
-		wxLogError("Discarding unfinalized last phase!");
-		DiscardPhase(state);
-	}
-	ControlPhase targetPhase = (ControlPhase)((int)state->lastPhase + 1);
-	// Skip room calibration phase if extrinsic phase was discarded (either here or explicitly)
-	if (state->lastPhase == PHASE_Calibration_Extrinsic && state->calibration.relations.size() == 0)
-		targetPhase = (ControlPhase)((int)state->lastPhase + 2);
-	EnterPhase(state, targetPhase);
-}
-
-
-static void UpdateTrackedCalibrationMarker(TrackingState *state)
-{
-	for (int m = 0; m < state->cameras.size(); m++)
-	{
-		CameraState *cam = &state->cameras[m];
-
-		// Single camera pose estimation using OpenCV
-		cam->extrinsic.lastPoses.swap(cam->extrinsic.poses);
-		cam->extrinsic.poses.clear();
-		cam->extrinsic.posesMSE.clear();
-		cam->extrinsic.posesMatch.clear();
-		cam->extrinsic.markers.clear();
-		cam->extrinsic.freeBlobs.clear();
-
-		if (!isMarkerBuiltIn(state->calibration.markerTemplate2D->id))
-		{ // Skip detection for testing markers (there's no detection algorithm for them)
-			if (cam->undistorted2D.size() >= state->calibration.markerTemplate2D->points.size())
-			{ // Assume all points visible belong to singular marker and are kept ordered (not shuffled)
-				cam->extrinsic.markers.push_back(Marker2D(state->calibration.markerTemplate2D->id, cam->undistorted2D.size()));
-				std::copy(cam->undistorted2D.begin(), cam->undistorted2D.end(), cam->extrinsic.markers[0].points.begin());
-			}
-		}
-		else // Detect built-in markers
-			findMarkerCandidates(cam->undistorted2D, cam->pointSizes, cam->extrinsic.markers, cam->extrinsic.freeBlobs);
-		cam->extrinsic.posesMSE.reserve(cam->extrinsic.markers.size());
-		cam->extrinsic.poses.reserve(cam->extrinsic.markers.size());
-
-		// Infer pose of detected markers
-		for (int i = 0; i < cam->extrinsic.markers.size(); i++)
-		{
-			Eigen::Isometry3f pose = inferMarkerPose(cam->camera, cam->extrinsic.markers[i], *state->calibration.markerTemplate2D);
-			float MSE = calculateMSE(pose, cam->camera, cam->extrinsic.markers[i], *state->calibration.markerTemplate2D);
-			cam->extrinsic.poses.push_back(pose);
-			cam->extrinsic.posesMSE.push_back(MSE);
-		}
-
-		// Match markers from last frame
-		matchTrackedPoses(cam->extrinsic.poses, cam->extrinsic.lastPoses, cam->extrinsic.poseDiffPos, cam->extrinsic.poseDiffRot, cam->extrinsic.posesMatch);
-
-		// Detect mirrored poses (due to inaccuracies) using last frames poses
-		for (int p = 0; p < cam->extrinsic.poses.size(); p++)
-		{
-			if (cam->extrinsic.posesMatch[p] != -1)
-			{
-				// Last frames rotation
-				int l = cam->extrinsic.posesMatch[p];
-				float expectedAngleDiff = cam->extrinsic.poseDiffRot[l];
-				if (expectedAngleDiff == 0) expectedAngleDiff = 10; // New pose in last frame
-				Eigen::Matrix3f lastRot = cam->extrinsic.lastPoses[l].rotation();// + cam->extrinsic.poseAngularMovement[i];
-				// Current frames rotation
-				Eigen::Matrix3f curRot = cam->extrinsic.poses[p].rotation();
-				float curAngleDiff = Eigen::AngleAxisf(curRot * lastRot.transpose()).angle();
-				if (curAngleDiff <= 2*expectedAngleDiff) continue;
-				// Test flip and compare
-				Eigen::Vector3f euler = getEulerXYZ(curRot);
-				Eigen::Matrix3f flippedRot = getRotationXYZ(Eigen::Vector3f(-euler.x(), -euler.y(), euler.z()));
-				float flippedAngleDiff = Eigen::AngleAxisf(flippedRot * lastRot.transpose()).angle();
-				if (flippedAngleDiff < 2.0f*expectedAngleDiff || flippedAngleDiff*1.5 < curAngleDiff)
-				{ // Flip rotation, because it conforms significantly more with expected rotation
-					Eigen::Isometry3f flippedPose = cam->extrinsic.poses[p];
-					flippedPose.linear() = flippedRot;
-					float flippedMSE = calculateMSE(flippedPose, cam->camera, cam->extrinsic.markers[p], *state->calibration.markerTemplate2D);
-					cam->extrinsic.poses[p] = flippedPose;
-					cam->extrinsic.posesMSE[p] = flippedMSE*10;
-//					wxLogMessage("Cam %d, Pose %d (%d):  Flipped, new MSE: %f! Diffs exp: %f, act: %f, flp: %f", m, p, l, flippedMSE, expectedAngleDiff/PI*180, curAngleDiff/PI*180, flippedAngleDiff/PI*180);
-				}
-			}
-		}
-
-		// Ignore rotation of inaccurate poses
-		for (int p = 0; p < cam->extrinsic.poses.size(); p++)
-		{
-			if (cam->extrinsic.posesMSE[p] > MAX_POSE_MSE)
-			{
-				wxLogMessage("Cam %d: Discarded pose, MSE %.4fmpx", m, cam->extrinsic.posesMSE[p]*1000);
-				int l = cam->extrinsic.posesMatch[p];
-				if (l != -1) cam->extrinsic.poses[p].linear() = cam->extrinsic.lastPoses[l].rotation();
-			}
-		}
-
-		// Update temporal information using matching
-		matchAccept(cam->extrinsic.poses, cam->extrinsic.lastPoses, cam->extrinsic.poseDiffPos, cam->extrinsic.poseDiffRot, cam->extrinsic.posesMatch);
-	}
-}
-
-static void UpdateCameraRelationCandidates(TrackingState *state)
-{
-	for (int r = 0; r < state->calibration.relations.size(); r++)
-	{
-		CameraRelation *rel = &state->calibration.relations[r];
-		CameraState *camA = &state->cameras[rel->camA];
-		CameraState *camB = &state->cameras[rel->camB];
-
-		for (int a = 0; a < camA->extrinsic.poses.size(); a++)
-		{
-			if (camA->extrinsic.posesMSE[a] > MAX_POSE_MSE) continue;
-			const Eigen::Isometry3f poseA = camA->extrinsic.poses[a];
-			for (int b = 0; b < camB->extrinsic.poses.size(); b++)
-			{
-				if (camB->extrinsic.posesMSE[b] > MAX_POSE_MSE) continue;
-				// Datapoint (Transformation from camera a to camera b)
-				const Eigen::Isometry3f poseB = camB->extrinsic.poses[b];
-				Eigen::Isometry3f transAB = poseA * poseB.inverse();
-				// Weight of datapoint
-				float distA = poseA.translation().norm(), rotA = std::abs(Eigen::AngleAxisf(poseA.rotation()).angle())/PI*2;
-				float distB = poseB.translation().norm(), rotB = std::abs(Eigen::AngleAxisf(poseB.rotation()).angle())/PI*2;
-				float weight = distA * (1+rotA) + distB * (1+rotB);
-				weight = 1000.0f/(weight*weight);
-				// Add to suitable candidate
-				int candidateInd = AddTransformToCandidates(rel->candidates, transAB, weight, 20, 2);
-
-				{ // Debug
-					// Calculate error between data point / candidate and ground truth
-					Eigen::Isometry3f transABGT = camA->camera.transform.inverse() * camB->camera.transform;
-					TransformCandidate *candidate = &rel->candidates[candidateInd];
-					std::pair<float,float> poseError = calculatePoseError(transABGT, transAB);
-					std::pair<float,float> candError = calculatePoseError(transABGT, candidate->transform);
-					// Debug
-					wxLogMessage("Cam Rel %d-%d: (%.4fmm, %.4f\u00B0) => (%.4fmm, %.4f\u00B0, %d, %d, %.4f)", rel->camA, rel->camB, poseError.first*10, poseError.second, candError.first*10, candError.second, candidateInd, (int)candidate->datapoints.size(), candidate->weight);
-				}
-
-
-			}	
-		}
-	}
-}
-
-static void UpdateRoomOriginCandidates(TrackingState *state)
-{
-	for (int m = 0; m < state->cameras.size(); m++)
-	{
-		CameraState *cam = &state->cameras[m];
-		for (int p = 0; p < cam->extrinsic.poses.size(); p++)
-		{
-			if (cam->extrinsic.posesMSE[p] > MAX_POSE_MSE) continue;
-			// Datapoint (Transformation from camera to origin)
-			const Eigen::Isometry3f pose = cam->extrinsic.poses[p];
-			// Weight of datapoint
-			float dist = pose.translation().norm(), rot = std::abs(Eigen::AngleAxisf(pose.rotation()).angle())/PI*2;
-			float weight = dist * (1+rot);
-			weight = 1000.0f/(weight*weight);
-			// Add to suitable candidate
-			int candidateInd = AddTransformToCandidates(cam->extrinsic.originCandidates, pose, weight, 5, 1);
-			
-			{ // Debug
-				// Calculate error between data point / candidate and ground truth
-				TransformCandidate *candidate = &cam->extrinsic.originCandidates[candidateInd];
-				std::pair<float,float> poseError = calculatePoseError(cam->camera.transform.inverse(), cam->extrinsic.poses[p]);
-				std::pair<float,float> candError = calculatePoseError(cam->camera.transform.inverse(), candidate->transform);
-				// Debug
-				wxLogMessage("Cam %d origin: (%.4fmm, %.4f\u00B0) => (%.4fmm, %.4f\u00B0, %d, %d, %.4f)", m, poseError.first*10, poseError.second, candError.first*10, candError.second, candidateInd, (int)candidate->datapoints.size(), candidate->weight);
-			}
-		}
-	}
-}
-
-static void UpdateIntrinsicCalibration(TrackingState *state)
-{
-	for (int m = 0; m < state->cameras.size(); m++)
-	{
-		CameraState *cam = &state->cameras[m];
-
-		cam->intrinsic.markers.clear();
-		cam->intrinsic.freeBlobs.clear();
-
-		if (!isMarkerBuiltIn(state->calibration.markerTemplate2D->id))
-		{ // Skip detection for testing markers (there's no detection algorithm for them)
-			if (cam->points2D.size() >= state->calibration.markerTemplate2D->points.size())
-			{ // Assume all points visible belong to singular marker and are kept ordered (not shuffled)
-				cam->intrinsic.markers.push_back(Marker2D(state->calibration.markerTemplate2D->id, cam->points2D.size()));
-				std::copy(cam->points2D.begin(), cam->points2D.end(), cam->intrinsic.markers[0].points.begin());
-			}
-		}
-		else // Detect built-in markers
-			findMarkerCandidates(cam->points2D, cam->pointSizes, cam->intrinsic.markers, cam->intrinsic.freeBlobs);
-	}
-
-	for (int m = 0; m < state->cameras.size(); m++)
-	{
-		CameraState *cam = &state->cameras[m];
-
-		// Calibration phase finalized, don't start new calibration rounds
-		if (cam->intrinsic.calibrationStopped) continue;
-
-		if (!cam->intrinsic.calibrationRunning)
-		{ // No updates while calibration is running
-
-			// Select markers for next calibration round
-			bool calibReady = selectMarkersForCalibration(cam->camera, *state->calibration.markerTemplate2D, cam->intrinsic.markers, cam->intrinsic.calibrationSelection,
-				cam->intrinsic.markerRadialLookup, cam->intrinsic.markerDensityGranularity, cam->intrinsic.markerDensityTarget,
-				cam->intrinsic.markerGridBuckets, cam->intrinsic.markerGridSize, cam->intrinsic.markerGridCountTarget,
-				&cam->intrinsic.markerSelectionThreshold, m);
-
-			// Start calibration round
-			int cnt = cam->intrinsic.calibrationSelection.size();
-			if (cnt > 10 && cnt >= cam->intrinsic.calibrationMarkerCount+10 && (calibReady || (cam->intrinsic.calibrationMarkerCount != 0 && cnt >= cam->intrinsic.calibrationMarkerCount*2)))
-			{
-				wxLogMessage("Cam %d starting calibration with %d points!", m, cnt);
-
-				// Start calibration thread
-				cam->intrinsic.calibrationRunning = true;
-				cam->intrinsic.calibrationFinished = false;
-				cam->intrinsic.calibrationMarkerCount = cnt;
-				cam->intrinsic.calibrationThread = new std::thread(CalibrationThreadFunction, state, cam);
-			}
-		}
-		else if (cam->intrinsic.calibrationFinished)
-		{ // Finished last calibration round
-
-			// Stop thread
-			if (cam->intrinsic.calibrationThread->joinable())
-				cam->intrinsic.calibrationThread->join();
-			delete cam->intrinsic.calibrationThread;
-			cam->intrinsic.calibrationThread = nullptr;
-			cam->intrinsic.calibrationRunning = false;
-			cam->intrinsic.calibrationFinished = false;
-
-			wxLogMessage("Cam %d calibration: %d points, FoV (%f, %f), Distortions (%f, %f, %f, %f, %f)", m, (int)cam->intrinsic.calibrationSelection.size(), cam->camera.fovH, cam->camera.fovV, cam->camera.distortion.k1, cam->camera.distortion.k2, cam->camera.distortion.p1, cam->camera.distortion.p2, cam->camera.distortion.k3);
-
-			// Filter out markers that had a high error
-			filterMarkersForCalibration(cam->camera, cam->intrinsic.calibrationMarkerErrors, cam->intrinsic.calibrationSelection, cam->intrinsic.markerRadialLookup, cam->intrinsic.markerGridBuckets, m);
-
-			// Adapt parameters for next round
-//			cam->intrinsic.markerDensityTarget *= 2.0f;
-			cam->intrinsic.markerDensityGranularity *= 0.5f;
-			cam->intrinsic.markerGridCountTarget *= 2;
-			cam->intrinsic.markerSelectionThreshold = 2.0f;
-		}
-	}
-}
-
-static void UpdateCalibratedMarkerTemplate(TrackingState *state)
+static void UpdateCalibrationMarker(ControlState *state)
 {
 	// Create 3D Rays for triangulation assuming calibrated camera
 	for (int m = 0; m < state->cameras.size(); m++)
@@ -792,10 +633,14 @@ static void UpdateCalibratedMarkerTemplate(TrackingState *state)
 			}*/
 		}
 	}
-
 }
 
-static void TrackMarkers(TrackingState *state)
+
+// ----------------------------------------------------------------------------
+// General 3D- and 2D Marker Tracking
+// ----------------------------------------------------------------------------
+
+static void TrackMarkers3D(ControlState *state)
 {
 	// Create 3D Rays for triangulation assuming calibrated camera
 	for (int m = 0; m < state->cameras.size(); m++)
@@ -830,7 +675,92 @@ static void TrackMarkers(TrackingState *state)
 	}
 }
 
-static void UndistortPoints(TrackingState *state)
+static void TrackMarkers2D(ControlState *state)
+{
+	for (int m = 0; m < state->cameras.size(); m++)
+	{
+		CameraState *cam = &state->cameras[m];
+
+		// Single camera pose estimation using OpenCV
+		cam->extrinsic.lastPoses.swap(cam->extrinsic.poses);
+		cam->extrinsic.poses.clear();
+		cam->extrinsic.posesMSE.clear();
+		cam->extrinsic.posesMatch.clear();
+		cam->extrinsic.markers.clear();
+		cam->extrinsic.freeBlobs.clear();
+
+		if (!isMarkerBuiltIn(state->calibration.markerTemplate2D->id))
+		{ // Skip detection for testing markers (there's no detection algorithm for them)
+			if (cam->undistorted2D.size() >= state->calibration.markerTemplate2D->points.size())
+			{ // Assume all points visible belong to singular marker and are kept ordered (not shuffled)
+				cam->extrinsic.markers.push_back(Marker2D(state->calibration.markerTemplate2D->id, cam->undistorted2D.size()));
+				std::copy(cam->undistorted2D.begin(), cam->undistorted2D.end(), cam->extrinsic.markers[0].points.begin());
+			}
+		}
+		else // Detect built-in markers
+			findMarkerCandidates(cam->undistorted2D, cam->pointSizes, cam->extrinsic.markers, cam->extrinsic.freeBlobs);
+		cam->extrinsic.posesMSE.reserve(cam->extrinsic.markers.size());
+		cam->extrinsic.poses.reserve(cam->extrinsic.markers.size());
+
+		// Infer pose of detected markers
+		for (int i = 0; i < cam->extrinsic.markers.size(); i++)
+		{
+			Eigen::Isometry3f pose = inferMarkerPose(cam->camera, cam->extrinsic.markers[i], *state->calibration.markerTemplate2D);
+			float MSE = calculateMSE(pose, cam->camera, cam->extrinsic.markers[i], *state->calibration.markerTemplate2D);
+			cam->extrinsic.poses.push_back(pose);
+			cam->extrinsic.posesMSE.push_back(MSE);
+		}
+
+		// Match markers from last frame
+		matchTrackedPoses(cam->extrinsic.poses, cam->extrinsic.lastPoses, cam->extrinsic.poseDiffPos, cam->extrinsic.poseDiffRot, cam->extrinsic.posesMatch);
+
+		// Detect mirrored poses (due to inaccuracies) using last frames poses
+		for (int p = 0; p < cam->extrinsic.poses.size(); p++)
+		{
+			if (cam->extrinsic.posesMatch[p] != -1)
+			{
+				// Last frames rotation
+				int l = cam->extrinsic.posesMatch[p];
+				float expectedAngleDiff = cam->extrinsic.poseDiffRot[l];
+				if (expectedAngleDiff == 0) expectedAngleDiff = 10; // New pose in last frame
+				Eigen::Matrix3f lastRot = cam->extrinsic.lastPoses[l].rotation();// + cam->extrinsic.poseAngularMovement[i];
+				// Current frames rotation
+				Eigen::Matrix3f curRot = cam->extrinsic.poses[p].rotation();
+				float curAngleDiff = Eigen::AngleAxisf(curRot * lastRot.transpose()).angle();
+				if (curAngleDiff <= 2*expectedAngleDiff) continue;
+				// Test flip and compare
+				Eigen::Vector3f euler = getEulerXYZ(curRot);
+				Eigen::Matrix3f flippedRot = getRotationXYZ(Eigen::Vector3f(-euler.x(), -euler.y(), euler.z()));
+				float flippedAngleDiff = Eigen::AngleAxisf(flippedRot * lastRot.transpose()).angle();
+				if (flippedAngleDiff < 2.0f*expectedAngleDiff || flippedAngleDiff*1.5 < curAngleDiff)
+				{ // Flip rotation, because it conforms significantly more with expected rotation
+					Eigen::Isometry3f flippedPose = cam->extrinsic.poses[p];
+					flippedPose.linear() = flippedRot;
+					float flippedMSE = calculateMSE(flippedPose, cam->camera, cam->extrinsic.markers[p], *state->calibration.markerTemplate2D);
+					cam->extrinsic.poses[p] = flippedPose;
+					cam->extrinsic.posesMSE[p] = flippedMSE*10;
+//					wxLogMessage("Cam %d, Pose %d (%d):  Flipped, new MSE: %f! Diffs exp: %f, act: %f, flp: %f", m, p, l, flippedMSE, expectedAngleDiff/PI*180, curAngleDiff/PI*180, flippedAngleDiff/PI*180);
+				}
+			}
+		}
+
+		// Ignore rotation of inaccurate poses
+		for (int p = 0; p < cam->extrinsic.poses.size(); p++)
+		{
+			if (cam->extrinsic.posesMSE[p] > MAX_POSE_MSE)
+			{
+				wxLogMessage("Cam %d: Discarded pose, MSE %.4fmpx", m, cam->extrinsic.posesMSE[p]*1000);
+				int l = cam->extrinsic.posesMatch[p];
+				if (l != -1) cam->extrinsic.poses[p].linear() = cam->extrinsic.lastPoses[l].rotation();
+			}
+		}
+
+		// Update temporal information using matching
+		matchAccept(cam->extrinsic.poses, cam->extrinsic.lastPoses, cam->extrinsic.poseDiffPos, cam->extrinsic.poseDiffRot, cam->extrinsic.posesMatch);
+	}
+}
+
+static void UndistortPoints(ControlState *state)
 {
 	for (int m = 0; m < state->cameras.size(); m++)
 	{
@@ -842,7 +772,126 @@ static void UndistortPoints(TrackingState *state)
 	}
 }
 
-void HandleCameraState(TrackingState *state)
+
+// ----------------------------------------------------------------------------
+// Phase Control
+// ----------------------------------------------------------------------------
+
+/**
+ * Finalize the current phase and return to the idle phase
+ */
+void FinalizePhase(ControlState *state)
+{
+	if (state->phase == PHASE_None || state->phase == PHASE_Idle)
+		return;
+
+	// Finalize current phase
+	bool writeCalibration = false;
+	if (state->phase == PHASE_Calibration_Intrinsic)
+	{
+		FinalizeCalibrationIntrinsic(state);
+		writeCalibration = true;
+	}
+	else if (state->phase == PHASE_Calibration_Extrinsic)
+	{
+		FinalizeCalibrationExtrinsic(state);
+	}
+	else if (state->phase == PHASE_Calibration_Room)
+	{
+		FinalizeCalibrationRoom(state);
+		writeCalibration = true;
+	}
+	else if (state->phase == PHASE_Calibration_Marker)
+	{
+		FinalizeCalibrationMarker(state);
+		writeCalibration = true;
+	}
+
+	// Write results of current phase
+	if (writeCalibration)
+	{
+		std::vector<Camera> cameraCalibrations(state->cameras.size());
+		for (int i = 0; i < state->cameras.size(); i++)
+			cameraCalibrations[i] = state->cameras[i].camera;
+		std::vector<MarkerTemplate3D> markerTemplates;
+		markerTemplates.reserve(state->tracking.markerTemplates3D.size());
+		for (int i = 0; i < state->tracking.markerTemplates3D.size(); i++)
+			if (state->tracking.markerTemplates3D[i].id >= 0) // TODO: Differentiate Testing markers some better way that allows saving of calibrated testing markers
+				markerTemplates.push_back(state->tracking.markerTemplates3D[i]);
+		writeCalibrationFile("config/calib.json", cameraCalibrations, markerTemplates);
+	}
+
+	// Return to idle phase
+	state->lastPhase = state->phase;
+	state->phase = PHASE_Idle;
+}
+
+/**
+ * Discard the current phase and return to the idle phase
+ */
+void DiscardPhase(ControlState *state)
+{
+	if (state->phase == PHASE_None || state->phase == PHASE_Idle)
+		return;
+
+	// Init next phase
+	if (state->phase == PHASE_Calibration_Intrinsic)
+		DiscardCalibrationIntrinsic(state);
+	else if (state->phase == PHASE_Calibration_Extrinsic)
+		DiscardCalibrationExtrinsic(state);
+	else if (state->phase == PHASE_Calibration_Room)
+		DiscardCalibrationRoom(state);
+	else if (state->phase == PHASE_Calibration_Marker)
+		DiscardCalibrationMarker(state);
+
+	// Return to idle phase
+	state->lastPhase = state->phase;
+	state->phase = PHASE_Idle;
+}
+
+/**
+ * Enters the specified phase from the idle phase
+ */
+void EnterPhase(ControlState *state, ControlPhase phase)
+{
+	if (state->phase != PHASE_Idle)
+		return;
+
+	// Enter phase
+	state->lastPhase = state->phase;
+	state->phase = phase;
+
+	// Init phase
+	if (phase == PHASE_Calibration_Intrinsic)
+		InitCalibrationIntrinsic(state);
+	else if (phase == PHASE_Calibration_Extrinsic)
+		InitCalibrationExtrinsic(state);
+	else if (phase == PHASE_Calibration_Room)
+		InitCalibrationRoom(state);
+	else if (phase == PHASE_Calibration_Marker)
+		InitCalibrationMarker(state);
+}
+
+/**
+ * Enters the next phase, discarding any unfinalized current phases
+ */
+void NextPhase(ControlState *state)
+{
+	if (state->lastPhase == PHASE_Tracking)
+		return;
+	if (state->phase != PHASE_Idle)
+		return;
+	ControlPhase targetPhase = (ControlPhase)((int)state->lastPhase + 1);
+	// Skip room calibration phase if extrinsic phase was discarded (either here or explicitly)
+	if (state->lastPhase == PHASE_Calibration_Extrinsic && state->calibration.relations.size() == 0)
+		targetPhase = (ControlPhase)((int)state->lastPhase + 2);
+	EnterPhase(state, targetPhase);
+}
+
+/**
+ * Handles a new frame
+ */
+void HandleCameraState(ControlState *state)
 {
 	if (state->phase == PHASE_Tracking)
 	{
@@ -850,12 +899,12 @@ void HandleCameraState(TrackingState *state)
 		UndistortPoints(state);
 
 		// Triangulate and detect markers
-		TrackMarkers(state);
+		TrackMarkers3D(state);
 	}
 	else if (state->phase == PHASE_Calibration_Intrinsic)
 	{
 		// Add to calibration list of good candidate, update calibration values
-		UpdateIntrinsicCalibration(state);
+		UpdateCalibrationIntrinsic(state);
 	}
 	else if (state->phase == PHASE_Calibration_Extrinsic || state->phase == PHASE_Calibration_Room)
 	{
@@ -863,15 +912,15 @@ void HandleCameraState(TrackingState *state)
 		UndistortPoints(state);
 
 		// Find calibration marker, match to previous frame and evaluate accuracy/error
-		UpdateTrackedCalibrationMarker(state);
+		TrackMarkers2D(state);
 
 		if (state->phase == PHASE_Calibration_Extrinsic)
 		{ // Use pose to establish relations between cameras to figure out relative transforms
-			UpdateCameraRelationCandidates(state);
+			UpdateCalibrationExtrinsic(state);
 		}
 		else if (state->phase == PHASE_Calibration_Room)
 		{ // Establish similar relations from each camera to the room origin (or later, floor)
-			UpdateRoomOriginCandidates(state);
+			UpdateCalibrationRoom(state);
 		}
 	}
 	else if (state->phase == PHASE_Calibration_Marker)
@@ -880,18 +929,6 @@ void HandleCameraState(TrackingState *state)
 		UndistortPoints(state);
 
 		// Triangulate point cloud and improve current marker template
-		UpdateCalibratedMarkerTemplate(state);
+		UpdateCalibrationMarker(state);
 	}
-}
-
-
-/**
- * Executes calibration and then exits
- */
-static void CalibrationThreadFunction(TrackingState *state, CameraState *cam)
-{
-	cam->intrinsic.calibrationRunning = true;
-	cam->intrinsic.calibrationFinished = false;
-	calculateIntrinsicCalibration(cam->camera, cam->intrinsic.calibrationSelection, *state->calibration.markerTemplate2D, cam->intrinsic.calibrationMarkerErrors);
-	cam->intrinsic.calibrationFinished = true;
 }
