@@ -5,7 +5,7 @@
  */
 
 #include "comm.hpp"
-#include "util.hpp"
+#include "util.hpp" // StatValue
 
 #ifdef NO_WX
 #define PRINT printf
@@ -47,7 +47,8 @@ struct libusb_state
 	libusb_transfer *intIN;
 	libusb_transfer *isoIN[NUM_TRANSFERS];
 	libusb_transfer *controlIN;
-	libusb_transfer *controlOUT;
+	libusb_transfer *controlOUT1;
+	libusb_transfer *controlOUT2;
 	std::thread *usbEventHandlerThread;
 	std::atomic<bool> usbEventHandlerRun;
 	std::atomic<bool> usbDeviceConnected;
@@ -59,7 +60,8 @@ struct libusb_state
 };
 
 static void usbEventHandler(CommState *state);
-static void tryFreeTransfer(libusb_transfer *transfer);
+static void tryCancelTransfer(libusb_transfer *transfer);
+static void tryFreeTransfer(libusb_transfer **transfer);
 
 static void onIsochronousIN(libusb_transfer *transfer);
 static void onInterruptIN(libusb_transfer *transfer);
@@ -69,7 +71,8 @@ static void onControlResponse(libusb_transfer *transfer);
 alignas(2) uint8_t intINBuf[64];
 alignas(2) uint8_t isoINBuf[NUM_TRANSFERS][ISO_PACKET_SIZE*NUM_PACKETS];
 alignas(2) uint8_t ctrlINBuf[64+8];
-alignas(2) uint8_t ctrlOUTBuf[64+8];
+alignas(2) uint8_t ctrlOUT1Buf[64+8];
+alignas(2) uint8_t ctrlOUT2Buf[64+8];
 
 #ifdef MEASURE_STALL_RECOVERY
 std::chrono::time_point<std::chrono::steady_clock> g_lastStallStart;
@@ -88,7 +91,7 @@ bool comm_init(CommState *state)
 	{ // Successful init
 		libusb_set_debug(context, LIBUSB_LOG_LEVEL_NONE);
 		state->libusb = (libusb_state*)malloc(sizeof(libusb_state));
-		memset(state->libusb, 0, sizeof(state->libusb));
+		memset(state->libusb, 0, sizeof(*state->libusb));
 		state->libusb->usbDeviceConnected = false;
 		state->libusb->usbEventHandlerRun = false;
 		state->libusb->usbAltSettingISO = false;
@@ -139,7 +142,7 @@ bool comm_check_device(CommState *state)
 	// Product strings
 	PRINT("VID: %d; PID: %d; Manufacturer: '%s'; ", devDesc.idVendor, devDesc.idProduct, strBuf);
 	libusb_get_string_descriptor_ascii(devHandle, devDesc.iProduct, (unsigned char*)strBuf, sizeof(strBuf));
-	PRINT("Product: '%s'\n", strBuf);
+	PRINT("Product: '%s'", strBuf);
 
 	// Config and interface overview
 	libusb_config_descriptor *configDesc;
@@ -150,12 +153,12 @@ bool comm_check_device(CommState *state)
 		for (int a = 0; a < interface->num_altsetting; a++)
 		{
 			const libusb_interface_descriptor *interfaceDesc = &interface->altsetting[a];
-			PRINT("Interface %d - %d (C %d, SC %d, P %d) has %d endpoints!\n", interfaceDesc->bInterfaceNumber, interfaceDesc->bAlternateSetting, interfaceDesc->bInterfaceClass, interfaceDesc->bInterfaceSubClass, interfaceDesc->bInterfaceProtocol, interfaceDesc->bNumEndpoints);
+			PRINT("Interface %d - %d (C %d, SC %d, P %d) has %d endpoints!", interfaceDesc->bInterfaceNumber, interfaceDesc->bAlternateSetting, interfaceDesc->bInterfaceClass, interfaceDesc->bInterfaceSubClass, interfaceDesc->bInterfaceProtocol, interfaceDesc->bNumEndpoints);
 			for (int e = 0; e < interfaceDesc->bNumEndpoints; e++)
 			{
 				const libusb_endpoint_descriptor *epDesc = &interfaceDesc->endpoint[e];
 				libusb_transfer_type type = (libusb_transfer_type)(epDesc->bmAttributes & 0b11);
-				PRINT("    %s EP %d has packet size %d and polling interval of %dms!\n",
+				PRINT("    %s EP %d has packet size %d and polling interval of %dms!",
 					type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS? "ISO" : (type == LIBUSB_TRANSFER_TYPE_INTERRUPT? "INT" : "Other"),
 					epDesc->bEndpointAddress, epDesc->wMaxPacketSize, epDesc->bInterval);
 			}
@@ -178,14 +181,14 @@ bool comm_connect(CommState *state, bool altSetting)
 		libusb_detach_kernel_driver(state->libusb->devHandle, USBD_INTERFACE);
 	if ((code = libusb_claim_interface(state->libusb->devHandle, USBD_INTERFACE)) != 0)
 	{
-		PRINT("ERROR: Failed to claim interface: %s\n", libusb_error_name(code));
+		PRINT("ERROR: Failed to claim interface: %s", libusb_error_name(code));
 		return false;
 	}
 
 	if (altSetting)
 	{
 		if ((code = libusb_set_interface_alt_setting(state->libusb->devHandle, USBD_INTERFACE, 1)) != 0) {
-			PRINT("ERROR: Failed to set alternate interface: %s\n", libusb_error_name(code));
+			PRINT("ERROR: Failed to set alternate interface: %s", libusb_error_name(code));
 			libusb_release_interface(state->libusb->devHandle, USBD_INTERFACE);
 			return false;
 		}
@@ -209,39 +212,72 @@ bool comm_connect(CommState *state, bool altSetting)
 	libusb_fill_control_setup(ctrlINBuf, LIBUSB_RECIPIENT_INTERFACE | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_IN, 0x00, 0x0000, USBD_INTERFACE, 64);
 	state->libusb->controlIN = libusb_alloc_transfer(0);
 	libusb_fill_control_transfer(state->libusb->controlIN, state->libusb->devHandle, ctrlINBuf, &onControlResponse, state, 4);
-	// Setup generic control request sending data to device
-	libusb_fill_control_setup(ctrlOUTBuf, LIBUSB_RECIPIENT_INTERFACE | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_OUT, 0x00, 0x0000, USBD_INTERFACE, 64);
-	state->libusb->controlOUT = libusb_alloc_transfer(0);
-	libusb_fill_control_transfer(state->libusb->controlOUT, state->libusb->devHandle, ctrlOUTBuf, &onControlSent, state, 4);
+	// Setup first generic control request sending data to device
+	libusb_fill_control_setup(ctrlOUT1Buf, LIBUSB_RECIPIENT_INTERFACE | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_OUT, 0x00, 0x0000, USBD_INTERFACE, 64);
+	state->libusb->controlOUT1 = libusb_alloc_transfer(0);
+	libusb_fill_control_transfer(state->libusb->controlOUT1, state->libusb->devHandle, ctrlOUT1Buf, &onControlSent, state, 4);
+	// Setup second generic control request sending data to device
+	libusb_fill_control_setup(ctrlOUT2Buf, LIBUSB_RECIPIENT_INTERFACE | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_OUT, 0x00, 0x0000, USBD_INTERFACE, 64);
+	state->libusb->controlOUT2 = libusb_alloc_transfer(0);
+	libusb_fill_control_transfer(state->libusb->controlOUT2, state->libusb->devHandle, ctrlOUT2Buf, &onControlSent, state, 4);
 
 	// Start usb thread
 	state->libusb->usbEventHandlerRun = true;
 	state->libusb->usbEventHandlerThread = new std::thread(usbEventHandler, state);
 
+	state->ctrlINPending = false;
+	state->ctrlOUT1Pending = false;
+	state->ctrlOUT2Pending = false;
+	for (int i = 0; i < NUM_TRANSFERS; i++)
+		state->libusb->isoINSubmitted[i] = false;
+	state->intINPending = false;
+
+	state->libusb->usbDeviceConnected = true;
+	state->usbDeviceActive = true;
+	return true;
+}
+
+bool comm_startStream(CommState *state)
+{
+	int code;
+
 	// Start submitting transfers
 	if (state->libusb->usbAltSettingISO)
 	{
 		code = libusb_submit_transfer(state->libusb->isoIN[0]);
-		PRINT("Submit Isochronous transfer 1 (%p): %s!", state->libusb->isoIN[0], libusb_error_name(code));
+		//PRINT("Submit Isochronous transfer 1 (%p): %s!", state->libusb->isoIN[0], libusb_error_name(code));
 		state->libusb->isoINSubmittedALL = false;
 		state->libusb->isoINSubmitted[0] = true;
 		for (int i = 1; i < NUM_TRANSFERS; i++)
-		{
 			state->libusb->isoINSubmitted[i] = false;
-		}
 		state->libusb->isoINStalled = NULL;
 	}
 	else
 	{
-		int status = libusb_submit_transfer(state->libusb->intIN);
+		code = libusb_submit_transfer(state->libusb->intIN);
 		PRINT("Interrupt transfer value: %s!", libusb_error_name(code));
 		state->intINPending = true;
 	}
-	state->ctrlINPending = false;
-	state->ctrlOUTPending = false;
+	return true;
+}
 
-	state->libusb->usbDeviceConnected = true;
-	state->usbDeviceActive = true;
+bool comm_stopStream(CommState *state)
+{
+	// Start submitting transfers
+	if (state->libusb->usbAltSettingISO)
+	{
+		for (int i = 1; i < NUM_TRANSFERS; i++)
+		{
+			if (state->libusb->isoINSubmitted[i])
+				tryCancelTransfer(state->libusb->isoIN[i]);
+			state->libusb->isoINSubmitted[i] = false;
+		}
+	}
+	else
+	{
+		if (state->intINPending)
+			tryCancelTransfer(state->libusb->intIN);
+	}
 	return true;
 }
 
@@ -253,27 +289,24 @@ bool comm_disconnect(CommState *state)
 	PRINT("Disconnecting device...");
 	state->libusb->usbDeviceConnected = false;
 
-	// Cancel transfers if ongoing
-	tryFreeTransfer(state->libusb->intIN);
-	for (int i = 0; i < NUM_TRANSFERS; i++)
-	{
-		tryFreeTransfer(state->libusb->isoIN[i]);	
-	}
-	tryFreeTransfer(state->libusb->controlIN);
-	tryFreeTransfer(state->libusb->controlOUT);
-	
 	// Start joining thread
-	bool join = state->libusb->usbEventHandlerThread->joinable();
 	state->libusb->usbEventHandlerRun = false;
+
+	// Cancel transfers if ongoing
+	tryFreeTransfer(&state->libusb->intIN);
+	for (int i = 0; i < NUM_TRANSFERS; i++)
+		tryFreeTransfer(&state->libusb->isoIN[i]);
+	tryFreeTransfer(&state->libusb->controlIN);
+	tryFreeTransfer(&state->libusb->controlOUT1);
+	tryFreeTransfer(&state->libusb->controlOUT2);
 
 	// Disconnect device
 	libusb_release_interface(state->libusb->devHandle, USBD_INTERFACE);
 	libusb_close(state->libusb->devHandle); // Crashes program for some reason
-	
-	if (join)
-	{ // Finish joining thread
+
+	// Join thread
+	if (state->libusb->usbEventHandlerThread->joinable())
 		state->libusb->usbEventHandlerThread->join();
-	}
 	delete state->libusb->usbEventHandlerThread;
 
 	// Reset everything but context
@@ -300,6 +333,7 @@ bool comm_submit_control_request(CommState *state, uint8_t request, uint16_t val
 	{
 		state->ctrlINPending = true;
 		struct libusb_control_setup *setup = (struct libusb_control_setup *)ctrlINBuf;
+		setup->bmRequestType = LIBUSB_RECIPIENT_INTERFACE | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_IN;
 		setup->bRequest = request;
 		setup->wValue = value;
 		setup->wIndex = index;
@@ -309,29 +343,45 @@ bool comm_submit_control_request(CommState *state, uint8_t request, uint16_t val
 	return false;
 }
 
-uint8_t* comm_get_control_data()
+bool comm_submit_control_data(CommState *state, uint8_t request, uint16_t value, uint16_t index, void* data, uint8_t size)
 {
-	return ctrlOUTBuf;
-}
-
-bool comm_submit_control_data(CommState *state, int request, int value, int index)
-{
-	if (!state->ctrlOUTPending)
+	uint8_t *buf;
+	libusb_transfer *trans;
+	if (!state->ctrlOUT1Pending)
 	{
-		state->ctrlOUTPending = true;
-		struct libusb_control_setup *setup = (struct libusb_control_setup *)ctrlOUTBuf;
-		setup->bRequest = request;
-		setup->wValue = value;
-		setup->wIndex = index;
-		libusb_submit_transfer(state->libusb->controlOUT);
-		return true;
+		state->ctrlOUT1Pending = true;
+		buf = ctrlOUT1Buf;
+		trans = state->libusb->controlOUT1;
 	}
-	return false;
+	else if (!state->ctrlOUT2Pending)
+	{
+		state->ctrlOUT2Pending = true;
+		buf = ctrlOUT2Buf;
+		trans = state->libusb->controlOUT2;
+	}
+	else
+	{
+		PRINT("Failed to submit control, no free control transfer!");
+		return false;
+	}
+	struct libusb_control_setup *setup = (struct libusb_control_setup *)buf;
+	setup->bmRequestType = LIBUSB_RECIPIENT_INTERFACE | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_OUT;
+	setup->bRequest = request;
+	setup->wValue = value;
+	setup->wIndex = index;
+	setup->wLength = size;
+	if (data != NULL && size != 0)
+		memcpy(buf+8, data, size);
+	libusb_submit_transfer(trans);
+	return true;
 }
 
 static void onControlSent(libusb_transfer *transfer)
 {
-	((CommState*)transfer->user_data)->ctrlOUTPending = false;
+	if (((CommState*)transfer->user_data)->libusb->controlOUT1 == transfer)
+		((CommState*)transfer->user_data)->ctrlOUT1Pending = false;
+	else
+		((CommState*)transfer->user_data)->ctrlOUT2Pending = false;
 }
 
 static void onControlResponse(libusb_transfer *transfer)
@@ -353,7 +403,7 @@ static void onControlResponse(libusb_transfer *transfer)
 	
 	struct libusb_control_setup *setup = (struct libusb_control_setup *)ctrlINBuf;
 	if (state->onControlResponse != NULL)
-		state->onControlResponse(setup->bRequest, setup->wValue, setup->wIndex, &transfer->buffer[8], transfer->actual_length);
+		state->onControlResponse(setup->bRequest, setup->wValue, setup->wIndex, &transfer->buffer[8], transfer->actual_length, state->userData);
 }
 
 static void onIsoINSubmission(libusb_transfer *transfer)
@@ -366,7 +416,7 @@ static void onIsoINSubmission(libusb_transfer *transfer)
 		if (state->libusb->isoINSubmitted[i] == false)
 		{
 			code = libusb_submit_transfer(state->libusb->isoIN[i]);
-			PRINT("Submit Isochronous transfer %d (%p): %s!", i, state->libusb->isoIN[i], libusb_error_name(code));
+			//PRINT("Submit Isochronous transfer %d (%p): %s!", i, state->libusb->isoIN[i], libusb_error_name(code));
 			state->libusb->isoINSubmitted[i] = true;
 //			return;
 		}
@@ -478,7 +528,7 @@ static void onIsochronousIN(libusb_transfer *transfer)
 			uint8_t* buf = (uint8_t*)libusb_get_iso_packet_buffer(transfer, i);
 //			PRINT("Iso IN %d: %.*s", i, packet->actual_length, buf);
 			if (state->onIsochronousIN != NULL)
-				state->onIsochronousIN(buf, packet->actual_length);
+				state->onIsochronousIN(buf, packet->actual_length, state->userData);
 		}
 	}
 
@@ -506,7 +556,7 @@ static void onInterruptIN(libusb_transfer *transfer)
 	}
 	
 	if (state->onInterruptIN != NULL)
-		state->onInterruptIN(transfer->buffer, transfer->actual_length);
+		state->onInterruptIN(transfer->buffer, transfer->actual_length, state->userData);
 
 	state->intINPending = true;
 	libusb_submit_transfer(state->libusb->intIN);
@@ -521,11 +571,17 @@ static void usbEventHandler(CommState *state)
 	}
 }
 
-static void tryFreeTransfer(libusb_transfer *transfer)
+static void tryCancelTransfer(libusb_transfer *transfer)
 {
 	if (transfer == NULL) return;
-	int cnt = 1000;
+	int cnt = 100000;
 	if (libusb_cancel_transfer(transfer) == 0)
 		while (transfer->status != LIBUSB_TRANSFER_CANCELLED && cnt-- > 0);
-	libusb_free_transfer(transfer);
+}
+static void tryFreeTransfer(libusb_transfer **transfer)
+{
+	if (*transfer == NULL) return;
+	tryCancelTransfer(*transfer);
+	libusb_free_transfer(*transfer);
+	*transfer = NULL;
 }

@@ -4,13 +4,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#ifndef DEF_EIGEN_UTIL
-#define DEF_EIGEN_UTIL
+#ifndef EIGEN_UTIL_H
+#define EIGEN_UTIL_H
 
 #include "Eigen/Core"
 #include "Eigen/Geometry"
 
 #include <string>
+#include <vector>
 
 
 /* Structures */
@@ -30,6 +31,19 @@ struct Camera
 	} distortion;
 };
 
+struct DefMarkerPoint
+{
+	Eigen::Vector3f pos;
+	Eigen::Vector3f nrm;
+	float fov;
+};
+
+struct DefMarker
+{
+	int id;
+	std::string label;
+	std::vector<DefMarkerPoint> points;
+};
 
 /* Variables */
 
@@ -191,4 +205,4 @@ inline Eigen::Vector2f undistortPoint(const Camera &camera, Eigen::Vector2f poin
 	return Eigen::Vector2f(xu*fx + camera.width/2, yu*fy + camera.height/2);
 }
 
-#endif
+#endif // EIGEN_UTIL_H

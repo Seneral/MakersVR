@@ -4,27 +4,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "util.hpp"
+#include "config.hpp"
 
 #include "nlohmann/json.hpp"
 using json = nlohmann::json;
 
 #include <fstream>
 #include <iomanip>
-
-/**
- * Updates the given statistical value with the new value
- */
-void UpdateStatValue(StatValue *stat, double cur)
-{
-	if (stat->num == 0) stat->start = cur;
-	stat->min = std::min(stat->min, cur);
-	stat->max = std::max(stat->max, cur);
-	stat->avg = (stat->avg * stat->num + cur) / (stat->num + 1);
-	stat->diff += (abs(cur - stat->avg) - stat->diff) / (stat->num + 1);	
-	stat->num++;
-	stat->cur = cur;
-}
 
 /**
  * Parses the configuration file config.json
@@ -44,10 +30,20 @@ void parseConfigFile(std::string path, Config *config)
 		auto mode = cfg["mode"];
 		if (mode.contains("cameraResolutionX"))
 			config->mode.cameraResolutionX = mode["cameraResolutionX"].get<int>();
+		else
+			config->mode.cameraResolutionX = 640;
 		if (mode.contains("cameraResolutionY"))
 			config->mode.cameraResolutionY = mode["cameraResolutionY"].get<int>();
+		else
+			config->mode.cameraResolutionY = 480;
 		if (mode.contains("cameraFramerate"))
 			config->mode.cameraFramerate = mode["cameraFramerate"].get<int>();
+		else
+			config->mode.cameraFramerate = 10;
+		if (mode.contains("cameraShutterSpeed"))
+			config->mode.cameraShutterSpeed = mode["cameraShutterSpeed"].get<int>();
+		else
+			config->mode.cameraShutterSpeed = 50;
 	}
 
 	if (cfg.contains("tracking"))
@@ -55,10 +51,52 @@ void parseConfigFile(std::string path, Config *config)
 		auto tracking = cfg["tracking"];
 		if (tracking.contains("minIntersectError"))
 			config->tracking.minIntersectError = tracking["minIntersectError"].get<float>();
+		else
+			config->tracking.minIntersectError = 0.01f;
 		if (tracking.contains("maxIntersectError"))
 			config->tracking.maxIntersectError = tracking["maxIntersectError"].get<float>();
+		else
+			config->tracking.maxIntersectError = 0.1f;
 		if (tracking.contains("sigmaError"))
 			config->tracking.sigmaError = tracking["sigmaError"].get<float>();
+		else
+			config->tracking.sigmaError = 3;
+	}
+
+	auto parseIterativeParamFloat = [](json cfg)
+	{
+		IterativeParam<float> param = { 0, 1, 0 };
+		if (cfg.is_object())
+		{
+			if (cfg.contains("start")) param.start = cfg["start"];
+			if (cfg.contains("factor")) param.factor = cfg["factor"];
+			if (cfg.contains("summand")) param.summand = cfg["summand"];
+		}
+		else param.start = cfg;
+		return param;
+	};
+	auto parseIterativeParamInt = [](json cfg)
+	{
+		IterativeParam<int> param = { 0, 1, 0 };
+		if (cfg.is_object())
+		{
+			if (cfg.contains("start")) param.start = cfg["start"];
+			if (cfg.contains("factor")) param.factor = cfg["factor"];
+			if (cfg.contains("summand")) param.summand = cfg["summand"];
+		}
+		else param.start = cfg;
+		return param;
+	};
+
+	if (cfg.contains("intrinsicCalib"))
+	{
+		auto intrinsic = cfg["intrinsicCalib"];
+		config->intrinsicCalib.selectionThreshold = parseIterativeParamFloat(intrinsic["selectionThreshold"]);
+		config->intrinsicCalib.maxMarkerCount = parseIterativeParamInt(intrinsic["maxMarkerCount"]);
+		config->intrinsicCalib.radialDensityGranularity = parseIterativeParamFloat(intrinsic["radialDensityGranularity"]);
+		config->intrinsicCalib.radialDensityTarget = parseIterativeParamFloat(intrinsic["radialDensityTarget"]);
+		config->intrinsicCalib.gridSize = intrinsic["gridSize"];
+		config->intrinsicCalib.gridCountTarget = parseIterativeParamInt(intrinsic["gridCountTarget"]);
 	}
 
 	if (cfg.contains("testsetup"))

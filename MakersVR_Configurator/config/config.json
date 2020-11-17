@@ -1,13 +1,33 @@
 {
 	"mode" : {
-		"cameraResolutionX": 1640,
-		"cameraResolutionY": 1232,
-		"cameraFramerate": 20
+		"cameraResolutionX": 1280,
+		"cameraResolutionY": 720,
+		"cameraFramerate": 30
 	},
 	"tracking" : {
 		"minIntersectError": 0.02,
 		"maxIntersectError": 0.05,
 		"sigmaError": 3
+	},
+	"intrinsicCalib" : {
+		"selectionThreshold": {
+			"start": 2.0,
+			"factor": 0.5
+		},
+		"maxMarkerCount": {
+			"start": 30,
+			"summand": 20
+		},
+		"radialDensityGranularity": 0.05,
+		"radialDensityTarget": {
+			"start": 2.0,
+			"summand": 1.0
+		},
+		"gridSize": 4,
+		"gridCountTarget": {
+			"start": 2,
+			"factor": 2
+		}
 	},
 	"testsetup" : {
 		"blobPxStdDev": 0.2,

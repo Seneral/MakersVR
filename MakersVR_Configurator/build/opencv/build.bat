@@ -29,15 +29,15 @@ echo -----------------------------------------
 echo Building Debug
 echo -----------------------------------------
 
-::cmake -C ../CMakeConfig.txt -G "NMake Makefiles" -DCMAKE_INSTALL_PREFIX="..\install" -DCMAKE_BUILD_TYPE=Debug %OPENCV_SRC_PATH%
-::nmake install
+cmake -C ../CMakeConfig.txt -G "NMake Makefiles" -DCMAKE_INSTALL_PREFIX="..\install" -DCMAKE_BUILD_TYPE=Debug %OPENCV_SRC_PATH%
+nmake install
 
 echo -----------------------------------------
 echo Building Release
 echo -----------------------------------------
 
-::cmake -C ../CMakeConfig.txt -G "NMake Makefiles" -DCMAKE_INSTALL_PREFIX="..\install" -DCMAKE_BUILD_TYPE=Release %OPENCV_SRC_PATH%
-::nmake install
+cmake -C ../CMakeConfig.txt -G "NMake Makefiles" -DCMAKE_INSTALL_PREFIX="..\install" -DCMAKE_BUILD_TYPE=Release %OPENCV_SRC_PATH%
+nmake install
 
 echo -----------------------------------------
 echo Build completed

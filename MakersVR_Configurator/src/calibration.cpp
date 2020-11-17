@@ -19,8 +19,9 @@
 
 // Parameters for findMarkerCandidates
 #define MAX_SIZE_DIFF 4 // Max relative blob size difference
-#define MAX_LENGTH_DIFF 0.1 // Max relative marker length difference
-#define MAX_ANGLE_DIFF 10.0f/180*PI // Max angle difference in radians
+#define MAX_LINE_DIFF 0.2 // Max relative marker length difference
+#define MAX_LENGTH_DIFF 0.3 // Max relative marker length difference
+#define MAX_ANGLE_DIFF 15.0f/180*PI // Max angle difference in radians
 
 /**
  * Calibration
@@ -109,7 +110,7 @@ void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const st
 				// Check if c is at the center of a and b, building a base line
 				float baseCenterDiff = (ptC*2 - ptA - ptB).norm();
 				float baseCenterError = baseCenterDiff / (baseLen/2);
-				if (baseCenterError > MAX_LENGTH_DIFF) continue;
+				if (baseCenterError > MAX_LINE_DIFF) continue;
 				
 				// Found a base
 				//float baseAngle = std::atan2(base.y(), base.x()) / PI * 180;
@@ -143,11 +144,13 @@ void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const st
 
 						// Check if head length is approximately half the size of the base
 						float headLenError = headLen * 2 / baseLen;
-						if (baseCenterError > MAX_LENGTH_DIFF) continue;
+						if (headLenError > 1.0f+MAX_LENGTH_DIFF || headLenError < 1.0f-MAX_LENGTH_DIFF)
+							continue;
 
 						// Check if head is aligned with base
 						float parallelsAngleDiff = std::acos(std::abs(base.normalized().dot(head.normalized())));
-						if (parallelsAngleDiff > MAX_ANGLE_DIFF) continue;
+						if (parallelsAngleDiff > MAX_ANGLE_DIFF)
+							continue;
 
 						// Found head, now find center
 						Eigen::Vector2f headCenter = (ptE+ptF) / 2;
@@ -168,7 +171,8 @@ void findMarkerCandidates(const std::vector<Eigen::Vector2f> &points2D, const st
 							Eigen::Vector2f ptD = points2D[d];
 							float centerDiff = (ptD-centerPos).norm();
 							float centerError = centerDiff / verticalLength * 2;
-							if (centerError > MAX_LENGTH_DIFF) continue;
+							if (centerError > MAX_LENGTH_DIFF)
+								continue;
 
 							// Now order base and head points correctly
 							int aR = a, bR = b, eR = e, fR = f;
@@ -523,7 +527,7 @@ void calculateCameraTransforms(std::vector<TransformSample*> &origins, std::vect
 /**
  * Adds markers that add value to the calibration to the calibration selection and adjusts selection parameters
  */
-bool selectMarkersForCalibration(const Camera &camera, const DefMarker &markerTemplate2D, const std::vector<Marker2D> &markers, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, float radialGranularity, float radialTarget, std::vector<std::vector<uint16_t>> &gridBuckets, int gridSize, int gridTarget, float *threshold, int m)
+bool selectMarkersForCalibration(const Camera &camera, const DefMarker &markerTemplate2D, const std::vector<Marker2D> &markers, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, float radialGranularity, float radialTarget, std::vector<std::vector<uint16_t>> &gridBuckets, int gridSize, int gridTarget, float threshold, int m)
 {
 	// granularity: Range of radial density check, specifies granularity at which markers are required and checked
 	// target: Local target density in the radial lookup table
@@ -568,11 +572,8 @@ bool selectMarkersForCalibration(const Camera &camera, const DefMarker &markerTe
 		}
 
 		// Determine if marker should be added
-		if (radialValue < *threshold*radialTarget && gridValue < *threshold*gridTarget)
-		{
-			*threshold = 0.99f * *threshold;
+		if (radialValue < threshold*radialTarget && gridValue < threshold*gridTarget)
 			continue;
-		}
 
 		// Add marker
 		int index = calibrationSelection.size();
@@ -725,12 +726,11 @@ float calculateIntrinsicCalibration(Camera &camera, const std::vector<Marker2D> 
 /**
  * Takes the calibration selection and filters them using the errors from the last calibration round
  */
-void filterMarkersForCalibration(const Camera &camera, const std::vector<double> &errors, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, std::vector<std::vector<uint16_t>> &gridBuckets, int m)
+void filterMarkersForCalibration(const Camera &camera, const std::vector<double> &errors, std::vector<Marker2D> &calibrationSelection, std::multimap<float, uint16_t> &radialLookup, std::vector<std::vector<uint16_t>> &gridBuckets)
 {
 	// Find the x worst fitting markers
 	int cnt = calibrationSelection.size();
 	int worstCnt = std::max(2, cnt/6);
-	wxLogMessage("Cam %d worst %d markers removed:", m, worstCnt);
 
 	// Setup index arrays for sorting
 	std::vector<int> idx;
@@ -782,6 +782,6 @@ void filterMarkersForCalibration(const Camera &camera, const std::vector<double>
 		wxLogMessage("  -> Removed (%d, %.04f)", idx[i], errors[idx[i]]);
 	}
 
-	wxLogMessage("Cam %d worst 5 markers left: (%d, %.04f), (%d, %.04f), (%d, %.04f), (%d, %.04f), (%d, %.04f)", m,
+	wxLogMessage("Worst 5 markers left: (%d, %.04f), (%d, %.04f), (%d, %.04f), (%d, %.04f), (%d, %.04f)",
 	idx[worstCnt+0], errors[idx[worstCnt+0]], idx[worstCnt+1], errors[idx[worstCnt+1]], idx[worstCnt+2], errors[idx[worstCnt+2]], idx[worstCnt+3], errors[idx[worstCnt+3]], idx[worstCnt+4], errors[idx[worstCnt+4]]);
 }

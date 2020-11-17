@@ -7,75 +7,25 @@
 #ifndef UTIL_H
 #define UTIL_H
 
-#include "eigenutil.hpp"
-
-#include "tracking.hpp"
-
-#include <vector>
-#include <string>
+#include <algorithm>
 
 struct StatValue
 {
 	double start, avg, diff, min, max, num, cur;
 };
 
-struct DefMarkerPoint
-{
-	Eigen::Vector3f pos;
-	Eigen::Vector3f nrm;
-	float fov;
-};
-
-struct DefMarker
-{
-	int id;
-	std::string label;
-	std::vector<DefMarkerPoint> points;
-};
-
-struct Config
-{
-	struct {
-		int cameraResolutionX;
-		int cameraResolutionY;
-		int cameraFramerate;
-	} mode;
-	struct {
-		float minIntersectError;
-		float maxIntersectError;
-		float sigmaError;
-	} tracking;
-	struct {
-		std::vector<DefMarker> calibrationMarkers;
-		std::vector<DefMarker> trackingMarkers;
-		std::vector<Camera> cameraDefinitions;
-		float blobPxStdDev;
-	} testing;
-};
-
 /**
  * Updates the given statistical value with the new value
  */
-void UpdateStatValue(StatValue *stat, double cur);
-
-/**
- * Parses the configuration file config.json
- */
-void parseConfigFile(std::string path, Config *config);
-
-/**
- * Parses a Marker Definition from a .obj file
- */
-bool parseMarkerDataFile(std::string path, std::vector<DefMarker> &markers, int fov);
-
-/**
- * Parses the given calibration
- */
-void parseCalibrationFile(std::string path, std::vector<Camera> &cameraCalib, std::vector<MarkerTemplate3D> &markerTemplates);
-
-/**
- * Writes the given calibration to file
- */
-void writeCalibrationFile(std::string path, const std::vector<Camera> &cameraCalib, const std::vector<MarkerTemplate3D> &markerTemplates);
+static void UpdateStatValue(StatValue *stat, double cur)
+{
+	if (stat->num == 0) stat->start = cur;
+	stat->min = std::min(stat->min, cur);
+	stat->max = std::max(stat->max, cur);
+	stat->avg = (stat->avg * stat->num + cur) / (stat->num + 1);
+	stat->diff += (abs(cur - stat->avg) - stat->diff) / (stat->num + 1);
+	stat->num++;
+	stat->cur = cur;
+}
 
 #endif // UTIL_H
