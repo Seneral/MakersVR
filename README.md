@@ -11,31 +11,27 @@ On the Host PC, the <i>Configurator</i> program (and later the driver) connects 
 In the Documentation you can find <a href="https://github.com/Seneral/MakersVR/tree/master/Documentation/Design">more detailed design documents</a>, alongside a <a href="https://raw.githubusercontent.com/Seneral/MakersVR/master/Documentation/PreliminaryPartsList.ods">preliminary parts list</a>. This places the currently expected costs between 110€ and 200€, depending on how many and which cameras are used.
 
 ## Current State
-The <i>Marker Detector</i> and <i>Marker Tracker</i> are working, and for the most part all technical challenges for a first prototype are overcome. However, the current blob detection backend of the <i>Marker Detector</i> is suboptimal and will be replaced for the final version. This alternative backend, which operates directly on the QPU of the VideoCore IV, is mostly done, but faces some final challenges which I will focus on after the rest of the system works. <br>
+I currently have a two-camera setup working as a prototype, and it works functionally. However I have not had luck with accurate intrinsic calibration yet, which holds me up from going any further until I have that figured out. A lot of the prototype is of course not final, the <i>Marker Detector</i> operates on an old GL backend that I am working to replace with a much better backend in the near future, for example. <br>
+Here's one of the <i>Marker Detector</i> with the <i>Marker Tracker</i>:
 <p align="center">
   <img alt="Hardware Prototype of MakersVR" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/HW_Prototype_Annotated.jpg" width="50%"/>
   <br>
   The <i>Marker Detector</i> and <i>Marker Tracker</i> prototypes
 </p>
-The actual tracking system on the host PC is not yet done and will still require a lot of work. This is planned to be developed solely with software-generated data first, so it does not require the above prototype hardware to develop for fast iteration. Plans are to use single-camera pose inference for calibration and multi-camera triangulation-based marker tracking for runtime use. <br>
+The actual tracking system on the host PC is functionally done and has been developed and successfully tested in testing environments. However it might need some adjustments to work practically. <br>
+The <i>Configurator</i> software currently contains a full testing mode and a device mode which connects to the actual hardware. In both modes you can do intrinsic calibration and extrinsic&room calibration phases using the calibration marker, as well as marker calibration and tracking phases using a tracking marker. <br> 
 <p align="center">
   <img alt="Software Configurator of MakersVR" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/SW_Configurator_Annotated.png" width="60%"/>
   <br>
   The <i>Configurator</i> streaming blobs from the Prototype Hardware
 </p>
-The marker detection in the multi-camera marker tracking will work similar to the <a href="https://ar-tracking.com/products/markers-targets/markers/">ART System</a>, with each 3D point identified based on the relations to it's neighbours within the marker. Currently, a basic version has been implemented with a marker setup similar to the WMR Controllers, not using any temporal information: <br>
+The marker detection in the multi-camera marker tracking works similar to the <a href="https://ar-tracking.com/products/markers-targets/markers/">ART System</a>, with each 3D point identified based on the relations to it's neighbours within the marker. This is marker configuration can be easily read in using a calibration phase. <br>
 <p align="center">
   <img alt="Multi-Camera Tracking" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/SW_Multi-Camera-Tracking.gif" width="40%"/>
   <br>
-  Marker Tracking using triangulated points and identification based on distances
+  Simulated marker tracking of a WMR-controller-like tracker. 
 </p>
-Any marker that has LEDs with (relatively) unique distances can be used by reading the positions in (to be done). But a cheap and easy to produce marker is a huge challenge. The WMR-like ring simulated above is way too expensive for home production in low quantities, so a more traditional design is used, a base supporting several sticks with LEDs at the tip (see the <a href="https://ar-tracking.com/products/markers-targets/targets/">ART targets</a> to get an idea). The base is going to be 3D-printed and houses power distribution (1S LiPo), and can be adapted to support many different marker layouts. The arms are currently planned to be made out of polypropylene straws, as they can survive quite a beating (for when you inevitably punch the walls) and can be easily replaced. The LED tips need to be spherical and well diffused, the current design is using a 3mm flat-top LED surrounded by sanded hot glue. While this sounds very improvised, it is in many ways elegant, cheap, and very effective: <br>
-<p align="center">
-  <img alt="LED Prototypes" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/HW_LED_Prototype.jpg" width="60%"/>
-  <br>
-  LED Prototypes unlit, lit, and in comparison to the brightness of a standard room light from 3 meters away.
-</p>
-Here's a first prototype showing the type of marker I'm going for; a center with electronics and battery (3D Print with minimized PCB in the final version, not this clump of a prototype), and arms with LED spheres at the end. The body is made of polymorph plastic, which allows for quick prototyping similar to 3D-Printing, <a href="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/HW_Marker_PolymorphPlastic.jpg">as seen here</a>.
+Any marker that has LEDs with (relatively) unique distances works fine. But a cheap and easy to produce marker is a huge challenge. The WMR-like ring simulated above is way too expensive for home production in low quantities, so a more traditional design is used, a base supporting several sticks with LEDs at the tip (see the <a href="https://ar-tracking.com/products/markers-targets/targets/">ART targets</a> to get an idea). The base is going to be 3D-printed and houses power distribution (1S LiPo), and can be adapted to support many different marker layouts - however the current prototype is made out of polymorph plastic, which allows for even quicker prototyping, <a href="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/HW_Marker_PolymorphPlastic.jpg">as seen here</a>. The arms are made out of polypropylene straws, as they can survive quite a beating (for when you inevitably punch the walls) and can be easily replaced. The LED tips need to be spherical and well diffused, the current design is using a 3mm flat-top LED surrounded by sanded hot glue: <br>
 <p align="center">
   <img alt="Marker Prototype" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/HW_Marker_Prototype.jpg" width="71.875%"/>
   <br>
@@ -49,21 +45,21 @@ One hardware problem I'm still facing is the camera selection. The ecosystem of 
 </p>
 
 ## Going Forward
-Until november I hope to have a working prototype. To meet this goal I will roughly follow these steps: <br>
-1. Finish single-camera camera calibration algorithms (nearly done)
-2. Finish multi-camera tracking algorithms (support for multiple markers)
-3. Test stability of algorithms using rendered data, fluid motion and occlusion. If needed, iterate
-4. Develop marker calibration algorithm (read in any tracking marker just by showing it)
-5. Finishing support of multiple cameras in <i>Marker Tracker</i> code and building prototype with three cameras
-6. Develop marker prototype using ShapeLock plastics and test it
-7. Test with real hardware, multiple cameras will be tested out
-8. Adapt SteamVR driver (SerialHMD) to general tracker use for FBT
-9. Develop final marker design(s), create 3D-print base
-10. Develop power-management electronics to keep LiPo safe and develop PCB
-11. Create a (3D-printed?) case for the electronics
+Although having a technically fully functional first prototype, it is not ready for use yet, and there's a lot to improve still: <br>
+1. Test out real hardware properly and improve accuracy along the way
+2. Finish alternative QPU backend on the <i>Marker Detector</i> for improved performance and accuracy
+3. Add additional CPU blob detection pass to increase accuracy 
+4. Add support for multiple properly tracked markers (currently simple frame-by-frame detection)
+5. Adapt SteamVR driver (SerialHMD) to general tracker use for FBT
+6. Develop power-management electronics to keep LiPo safe and develop PCB
+7. Develop final marker design(s), create 3D-print base
+8. Create a (3D-printed?) case for the electronics
 
 Along the way, depending on interest, I will expand the documentation on this project. <br>
-After the project reaches prototype stage I can encourage people to rebuild it, as at this point it can be used (although not with final quality / performance). For that I intend to ease rebuilding by providing some of the cheap parts (bought even more cheaply in bulk), some presoldered connections (there isn't a whole lot, and nothing expensive), and some prebuilt markers (requires PCBs and straws which can only be bought in bulk, 3D prints, and a lot of work).
+
+## Rebuilding
+Although the software is not finalized yet, the first prototype can be build in it's current state using just a soldering iron and it will stay the same for the forseeable future. All of the accuracy and performance improvements are purely software work. The required hardware components (with some parameters to adjust to budget) can be found <a href="https://github.com/Seneral/MakersVR/raw/master/Documentation/PreliminaryPartsList.ods">here</a>. If there's interest I'll add detailed instructions how to wire everything and tips for creating the calibration marker and tracking marker. <br>
+The software already has all required instructions for compiling in the respective subfolders, especially the testing mode of the <i>Configurator</i> software can be used without hardware. 
 
 ## Sub-Projects
 - Marker Detector: Software of the Raspberry Pi
