@@ -25,7 +25,7 @@ The <i>Configurator</i> software currently contains a full testing mode and a de
   <br>
   The <i>Configurator</i> streaming blobs from the Prototype Hardware
 </p>
-The marker detection in the multi-camera marker tracking works similar to the <a href="https://ar-tracking.com/products/markers-targets/markers/">ART System</a>, with each 3D point identified based on the relations to it's neighbours within the marker. This is marker configuration can be easily read in using a calibration phase. <br>
+The marker detection in the multi-camera marker tracking works similar to the <a href="https://ar-tracking.com/products/markers-targets/markers/">ART System</a>, with each 3D point identified based on the relations to its neighbours within the marker. This is marker configuration can be easily read in using a calibration phase. <br>
 <p align="center">
   <img alt="Multi-Camera Tracking" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/SW_Multi-Camera-Tracking.gif" width="40%"/>
   <br>
@@ -49,16 +49,17 @@ Although having a technically fully functional first prototype, it is not ready 
 1. Test out real hardware properly and improve accuracy along the way
 2. Finish alternative QPU backend on the <i>Marker Detector</i> for improved performance and accuracy
 3. Add additional CPU blob detection pass to increase accuracy 
-4. Add support for multiple properly tracked markers (currently simple frame-by-frame detection)
-5. Adapt SteamVR driver (SerialHMD) to general tracker use for FBT
-6. Develop power-management electronics to keep LiPo safe and develop PCB
-7. Develop final marker design(s), create 3D-print base
-8. Create a (3D-printed?) case for the electronics
+4. Implement camera sync feedback (else fast movements will be inaccurate)
+5. Add support for multiple properly tracked markers (currently simple frame-by-frame detection)
+6. Adapt SteamVR driver (SerialHMD) to general tracker use for FBT
+7. Develop power-management electronics to keep LiPo safe and develop PCB
+8. Develop final marker design(s), create 3D-print base
+9. Create a (3D-printed?) case for the electronics
 
 Along the way, depending on interest, I will expand the documentation on this project. <br>
 
 ## Rebuilding
-Although the software is not finalized yet, the first prototype can be build in it's current state using just a soldering iron and it will stay the same for the forseeable future. All of the accuracy and performance improvements are purely software work. The required hardware components (with some parameters to adjust to budget) can be found <a href="https://github.com/Seneral/MakersVR/raw/master/Documentation/PreliminaryPartsList.ods">here</a>. If there's interest I'll add detailed instructions how to wire everything and tips for creating the calibration marker and tracking marker. <br>
+Although the software is not finalized yet, the first prototype can be build in its current state using just a soldering iron and it will stay the same for the forseeable future. All of the accuracy and performance improvements are purely software work. The required hardware components (with some parameters to adjust to budget) can be found <a href="https://github.com/Seneral/MakersVR/raw/master/Documentation/PreliminaryPartsList.ods">here</a>. If there's interest I'll add detailed instructions how to wire everything and tips for creating the calibration marker and tracking marker. <br>
 The software already has all required instructions for compiling in the respective subfolders, especially the testing mode of the <i>Configurator</i> software can be used without hardware. 
 
 ## Sub-Projects
