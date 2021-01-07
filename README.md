@@ -69,32 +69,34 @@ The software already has all required instructions for compiling in the respecti
 - Configurator: Test and future Configuration Software of the Host PC. Will be split later into tracking, configurator and driver
 
 ## Tracking Quality
-All I can deliver about tracking quality right now are calculations, since there is no working version yet. Here are some numbers for the current prototype and the final version: <br>
+All I can deliver about tracking quality right now are preliminary results. Here are some numbers for the current prototype: <br>
 #### Latency
-The current prototype uses the GL backend of VC4CV, and this is the biggest issue right now.
+The newest WIP prototype uses the QPU backend of VC4CV, which is much, much faster than the GL backend that is currently in the repository.
 - The camera processing time before reaching my code is unknown, but below 5ms
-- For a 1280x720 frame, only 25fps can be reached, which is a latency of about 40ms just for the camera.
+- The frametime is 2-3ms for a 640x480 image and 7-10ms for a 1640x1232 image - see below for more results.
 - The UART connection is currently only 11520 baud, so another ~8ms is added for just three markers
 - STM32 adds little to no latency, and considering the frame time and delay on host side, another 2-4ms can be added
 
-This would add up to around 55ms, just to get it on the PC, so maybe 70-80ms to the display. <br>
-For the final version, the QPU backend of VC4CV is used, and here I can only make educated guesses.
-- The camera processing time before reaching my code is unknown, but below 5ms
-- A 1640x1232 frame at 40fps is targetted (not possible with GL backend), with an estimated frametime of 5-10ms
-- While not tested, a baud rate of up to 1MHz (UART or SPI) should be possible, which would take around 1ms
-- Again the STM32 and USB protocol add around 2-4ms
+This would add up to around 25ms, just to get it on the PC. <br>
+For the final version, I hope to speed up the serial connection, or use additional differential hardware.
+Assuming 1Mbaud (using either UART or SPI), it would only take around 1ms to transfer average data, so the final latency from movement to PC might drop as low as 10-15ms.
 
-This would amount to around 15ms tracking system latency, and 30-40ms motion-to-photon latency. <br>
-In the final version, the camera synchronisation measures the exact latency times as a byproduct, so I will be able to name exact numbers when that is done.
-
-#### Accuracy
-Here I'm calculating the pixel size at a given distance (<i>dist</i>) with a given horizontal FoV (<i>hfov</i>) and horizontal sensor resolution (<i>hres</i>): <br>
-  tan(<i>hfov</i>/2) * 2 * <i>dist</i> / <i>hres</i> <br>
-Here are the numbers for some camera configurations at 3m distance (average center), accounting for binning and partial sensor modes: <br>
-1280x720 @ 53.5° hFoV (Camera Module V1): 2.36mm <br> 
-1280x720 @ 62.2° hFoV (effectively 48.54°) (Camera Module V2, current prototype with GL backend): 2.21mm <br>
-1640x1232 @ 62.2° hFoV (Camera Module V2, later version with QPU backend): 2.21mm <br>
-With subpixel blob accuracy and multiple blobs per marker we can hope for 1mm-accuracy, however this remains to be seen.
+##### Frametime results
+Results using WIP blob detection, from the moment the camera framework finishes a frame, to the moment the blobs are extracted.
+There are still some optimizations possible in ALL steps, but mostly Fetch, as the information where the blobs are could be passed from the QPU instead.
+Here's with a single blob with 10px radius:
+```
+Zero, 1536x1232: 142fps; QPU 3.68 + Fetch 2.70 + CCL 0.12 => 6.5ms
+Zero, 640x480: 482fps; QPU 1.01 + Fetch 0.46 + CCL 0.12 => 1.59ms
+Zero, 512x480: 575fps; QPU 0.77 + Fetch 0.37 + CCL 0.12 => 1.26ms
+```
+And here's with a single blob with 40px radius:
+```
+Zero, 1536x1232: 126fps; QPU 3.72 + Fetch 2.82 + CCL 0.79 => 7.33ms
+Zero, 640x480: 345fps; QPU 1.02 + Fetch 0.59 + CCL 0.76 => 2.37ms
+Zero, 512x480: 390fps; QPU 0.77 + Fetch 0.50 + CCL 0.75 => 2.02ms
+```
+QPU: Blob detection to mask on the QPU - Fetch: Fetching regions with blobs from the mask using CPU - CCL: Connected Component Labeling to extract distinct blobs using CPU
 
 ## Contact
 Depending on what you want:
