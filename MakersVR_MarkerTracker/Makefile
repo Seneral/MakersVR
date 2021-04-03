@@ -103,7 +103,7 @@ AS_INCLUDES =
 # C includes
 C_INCLUDES =  \
 -Iinc \
--Ilibusb/Inc \
+-Ilibusb/inc \
 -IDrivers/CMSIS/Include \
 -IDrivers/CMSIS/Device/ST \
 -IDrivers/CMSIS/Device/ST/STM32F1xx/Include \

@@ -32,7 +32,7 @@ static uint8_t ctl_buffer[USBD_EP_CTRL_SIZE+8];
 
 /* USB string descriptors */
 static const struct usb_string_descriptor str_desc_wcid = USB_ARRAY_DESC('M', 'S', 'F', 'T', '1', '0', '0', WCID_VENDOR_CODE);
-static const struct usb_string_descriptor str_desc_lang = USB_ARRAY_DESC(USB_LANGID_ENG_US);
+static const struct usb_string_descriptor str_desc_lang = USB_ARRAY_DESC(USB_LANGID_ENG_UK);
 static const struct usb_string_descriptor str_desc_manufacturer = USB_STRING_DESC("Seneral seneral.dev");
 static const struct usb_string_descriptor str_desc_product = USB_STRING_DESC("MakersVR Device");
 static const struct usb_string_descriptor *const str_desc_table[] = {
@@ -120,6 +120,15 @@ static const struct usb_config USBD_Config_Desc = {
 		.bInterval = 1,
 	}
 };
+/* TODO: Switch to variable amount of interrupt endpoints instead of isochronous endpoints
+Much more reliable on all platforms than isochronous (that has issues with WinUSB)
+Much less datathroughput per port (64bytes vs theoretical 1024bytes)
+High datathroughput can still be achieved by reserving many ports (flexible depending how full USB controller is)
+Flexible in distributing packets for cameras among ports that are free
+Also not forced to be double buffered by libusb_stm32, so potentially double the TOTAL thoughput (as all PMA memory can be used)
+Implementation by providing multuple interfaces with increasing amount of interrupt endpoints
+host can then select the interface with the most ports that is not blocked by the driver (due to controller being full, for example)
+*/
 
 /*
 	WCID Compat ID descriptor

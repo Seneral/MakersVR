@@ -168,7 +168,8 @@ int main(void)
 			{
 				if ((portStates[i].commState & CommReady) == CommReady && portStates[i].data.unhandled)
 				{ // Send unhandled UART packet out to USB
-					if (portTime < 1000-USB_WRITE_BUFFER_TIME*i && usbPort->bufferPos == 0 && usbPort->bufferSz > portStates[i].data.len+usbHeaderLength)
+					// TODO: Fix freezes that seem to occur here, until then, just drop frames that couldn't be send off immediately 
+					if (false && portTime < 1000-USB_WRITE_BUFFER_TIME*i && usbPort->bufferPos == 0 && usbPort->bufferSz > portStates[i].data.len+usbHeaderLength)
 					{ // Port is ready to send, with time left to write buffer
 						//DEBUG_CHARR('/', hex[portStates[i].data.len>>4], hex[portStates[i].data.len&15], ':', '0' + portTime/100, '0' + (portTime % 100) / 10, '0' + portTime%10);
 						// Overwrite now unused UART header with USB header
@@ -467,7 +468,7 @@ static void UART_ProcessData(uint_fast8_t port, uint8_t* rcv, uint_fast16_t rcvS
 					// Accept next UART packet
 					UART_NextPacket(port);
 				}
-				else
+				else if (false)
 				{ // Can't send immediately, schedule until after frame is over to send
 					//DEBUG_CHARR('/', hex[dataCount>>4], hex[dataCount&15], ':', '0' + portTime/100, '0' + (portTime % 100) / 10, '0' + portTime%10);
 					state->data.unhandled = true;
@@ -598,6 +599,10 @@ static void UART_Init(void)
 	// Thus we use DMA to not waste CPU cycles, however not in circular mode since packet sizes are rather predictable, and normal mode is sufficient and easier
 	// So, we use the IDLE interrupt to handle packets, once the full packet has arrived, disable DMA to prevent the new packet from being appended afterwards
 	// Only after we process them we enable the DMA again to start loading in the next packet into the buffer from its beginning
+
+	// TODO: Ditch DMA and just write bytes as they come into the apropriate USB buffer directly
+	// Much lower latency, better distribution, less intermediate storage
+	// And CPU is not used otherwise anyway, but DO keep the DMA version in case we ever do tracking on here!
 
 	// Enable GPIO Clocks for all used GPIO Ports
 	LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOA);
