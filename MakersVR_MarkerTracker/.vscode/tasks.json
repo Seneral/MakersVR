@@ -13,18 +13,26 @@
 			"group": {
 				"kind": "build",
 				"isDefault": true
-			}
+			},
+			"problemMatcher": []
 		},
 		{
 			"label": "Build STM32",
 			"type": "shell",
 			"command": "make",
-			"group": "build"
+			"group": "build",
+			"problemMatcher": [
+				"$gcc"
+			]
 		},
 		{
-			"label": "Upload STM32 on COM4",
+			"label": "Upload STM32",
 			"type": "shell",
-			"command": "STM32_Programmer_CLI -c port=COM4 -d build/MakersVRDevice.elf",
+			"command": "STM32_Programmer_CLI -c port=/dev/ttyUSB0 -d build/MakersVRDevice.elf",
+			"windows": {
+				"command": "STM32_Programmer_CLI -c port=COM3 -d build/MakersVRDevice.elf"
+			},
+			"problemMatcher": [],
 			"dependsOn": [
 				"Build STM32"
 			]
