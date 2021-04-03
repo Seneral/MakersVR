@@ -13,6 +13,7 @@
 #include "wxbase.hpp" // Disables unused libs, and includes wx/log.h
 #include "wx/app.h"
 #include "wx/window.h"
+#include "wx/panel.h"
 #include "wx/frame.h"
 #include "wx/menu.h"
 #include "wx/msgdlg.h"
@@ -67,13 +68,23 @@ class ConfiguratorFrame : public wxFrame
 {
 public:
 	ConfiguratorFrame();
+
 	wxPanel *mainPanel;
-	wxButton *buttonAccept;
-	wxChoice *phaseSelector;
+	// Setup controls
 	wxSpinCtrl *widthField;
 	wxSpinCtrl *heightField;
 	wxSpinCtrl *fpsField;
 	wxSpinCtrl *ssField;
+	wxSpinCtrl *gainField;
+	wxSpinCtrl *absThresholdField;
+	wxSpinCtrl *edgeThresholdField;
+	// Phase controls
+	wxChoice *phaseSelector;
+	wxButton *buttonAccept;
+	// Intrinsic controls
+	wxChoice *phaseFocusSelector;
+	wxStaticText *phaseStateText;
+
 private:
 	void OnClose(wxCloseEvent &event);
 	void OnExit(wxCommandEvent &event);
@@ -86,9 +97,11 @@ private:
 	void OnStopTesting(wxCommandEvent &event);
 	void OnSelectMarker(wxCommandEvent &event);
 	void OnSelectPhase(wxCommandEvent &event);
+	void OnSelectFocus(wxCommandEvent &event);
+	void OnResetFocusState(wxCommandEvent &event);
 	void OnAcceptPhase(wxCommandEvent &event);
 	void OnDiscardPhase(wxCommandEvent &event);
-	void OnChangeSetup(wxSpinEvent &event);
+	void OnChangeSetup(wxCommandEvent &event);
 	void OnKeyDown(wxKeyEvent &event);
 
 	wxDECLARE_EVENT_TABLE();
@@ -105,8 +118,9 @@ public:
 	void AssureInit();
 private:
 	wxGLCanvas *m_canvas;
+	void OnIssueRender(wxCommandEvent &event);
 	void Render();
-	void OnClose(wxCloseEvent& event);
+	void OnClose(wxCloseEvent &event);
 	void OnKeyDown(wxKeyEvent &event);
 };
 

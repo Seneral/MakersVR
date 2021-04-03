@@ -71,6 +71,7 @@ struct CameraState
 		bool calibrationFinished;
 		bool calibrationStopped;
 		int calibrationMarkerCount;
+		int calibrationTimeout;
 	} intrinsic;
 	struct { // Single-Camera state (Extrinsic calibration)
 		// Extrinsic calibration state
@@ -107,13 +108,23 @@ struct ControlState
 		std::vector<DefMarker> markerTemplates2D;
 		DefMarker *markerTemplate2D;
 		std::vector<CameraRelation> relations;
+		float maxRelationCandidateDiffT;
+		float maxRelationCandidateDiffR;
+		float maxOriginCandidateDiffT;
+		float maxOriginCandidateDiffR;
+		float maxPoseMSE;
+		int phaseFocus;
 	} calibration;
 	struct { // Multi-Camera state (Tracking)
 		std::vector<MarkerTemplate3D> markerTemplates3D;
 		int trackID; // ID of currently tracked marker
-		float sigmaError;
 		float minIntersectError;
 		float maxIntersectError;
+		float maxTemporalStaticErrorT;
+		float maxTemporalStaticErrorR;
+		float maxTemporalDynamicErrorT;
+		float maxTemporalDynamicErrorR;
+		float sigmaError;
 		std::vector<TriangulatedPoint> points3D;
 		int nonconflictedCount;
 		std::vector<std::vector<int>> conflicts;
@@ -130,7 +141,6 @@ struct ControlState
 		bool isTesting;
 		Eigen::Isometry3f targetPose;
 		Eigen::Isometry3f GT;
-		std::vector<Ray> rays3D;
 		std::vector<Eigen::Vector3f> triangulatedPoints3D;
 		float blobPxStdDev;
 		DefMarker *markerTemplate3D;
@@ -164,5 +174,22 @@ void NextPhase(ControlState *state);
  */
 void HandleCameraState(ControlState *state);
 
+
+/* Interaction with individual phase items */
+
+/**
+ * Set the callback for when individual phase items receive an update
+ */
+void SetStatusCallback(void (*UpdateStatus)(int));
+
+/**
+ * Returns a description of the given items (e.g. camera or camera relation) status
+ */
+std::string GetItemStatus(ControlState *state, int index);
+
+/**
+ * Resets a given items (e.g. camera or camera relation) status
+ */
+void ResetItem(ControlState *state, int index);
 
 #endif // CONTROL_H

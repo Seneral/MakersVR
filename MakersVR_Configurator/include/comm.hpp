@@ -8,6 +8,7 @@
 #define COMM_H
 
 #include <atomic>
+#include <cstddef>
 
 // Opaque struct
 struct libusb_state;

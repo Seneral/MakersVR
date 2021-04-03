@@ -7,8 +7,6 @@
 #ifndef CALIBRATION_H
 #define CALIBRATION_H
 
-#define MAX_POSE_MSE 1 //0.4f*0.4f
-
 #include "eigenutil.hpp"
 
 #include <vector>
@@ -44,7 +42,8 @@ struct TransformSample
 {
 	Eigen::Isometry3f transform;
 	float weight;
-	float stdDeviation;
+	int sampleCount;
+	float stdDevT, stdDevR;
 };
 
 struct CameraRelation

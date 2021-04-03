@@ -52,22 +52,22 @@ void visualizePoints3D(const Camera &camera, const std::vector<Eigen::Vector3f> 
 /**
  * Visualize poses in camera or world space
  */
-void visualizePoses(const Camera &camera, const std::vector<Eigen::Isometry3f> &poses3D, bool cameraSpace);
+void visualizePoses(const Camera &camera, const std::vector<Eigen::Isometry3f> &poses3D, bool cameraSpace, Color color = { 0, 0, 1 }, float scale = 100.0f);
 
 /**
  * Visualize calibration markers in pixel space
  */
-void visualizeMarkers(const Camera &camera, const std::vector<Marker2D> &markers2D);
+void visualizeMarkers(const Camera &camera, const std::vector<Marker2D> &markers2D, Color color = { 1, 1, 0 });
 
 /**
  * Visualize 3D Rays in world space
  */
-void visualizeRays(const Camera &camera, const std::vector<Ray> &rays3D);
+void visualizeRays(const Camera &camera, const std::vector<Ray> &rays3D, Color color = { 0, 0.5f, 0 });
 
 /**
  * Visualize triangulated point cloud in world space
  */
-void visualizeTriangulation(const Camera &camera, const std::vector<TriangulatedPoint> &points3D, int nonconflictedCount);
+void visualizeTriangulation(const Camera &camera, const std::vector<TriangulatedPoint> &points3D, int nonconflictedCount, Color colorNC = { 1, 0, 0 }, Color colorC = { 1, 0, 1 });
 
 /**
  * Visualize camera distortion using a grid of size num

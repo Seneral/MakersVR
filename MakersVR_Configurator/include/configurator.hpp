@@ -26,15 +26,15 @@ struct ConfiguratorState
 	Config config = {};
 	ConfiguratorMode mode = MODE_None;
 	ControlState control = {};
-	CommState comm = { NULL, { false }, { false }, { false }, { false }, NULL, NULL, NULL };
+	CommState comm = { NULL, { false }, { false }, { false }, { false }, { false }, NULL };
 	// Device Camera Mapping
 	int cameraCount = 0;
 	std::vector<int> cameraMapping = {}; // Device port Index -> Camera index
 	// Comm thread
-	std::atomic<bool> runCommThread = false;
+	std::atomic<bool> runCommThread = { false };
 	std::thread *commThread = NULL;
 	// Test thread
-	std::atomic<bool> runTestThread = false;
+	std::atomic<bool> runTestThread = { false };
 	std::thread *testThread = NULL;
 	// Testing state
 	Eigen::Vector3f TGT = Eigen::Vector3f(0,0,100);
@@ -42,7 +42,6 @@ struct ConfiguratorState
 	Eigen::Vector3f TD = Eigen::Vector3f::Zero();
 	Eigen::Vector3f RD = Eigen::Vector3f::Zero();
 	bool updateTestThread = true;
-	int focusOnCamera = 0;
 	// Visualization callbacks
 	void (*OnUpdateCam)(int n) = NULL;
 };

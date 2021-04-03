@@ -1,0 +1,39 @@
+{
+	"configurations": [
+		{
+			"name": "Linux",
+			"includePath": [
+				"${workspaceFolder}/include",
+				"${workspaceFolder}/lib/linux/**",
+				"/usr/include/**"
+			],
+			"defines": [
+				"EIGEN_MPL2_ONLY",
+				"__WXGTK__",
+				"_FILE_OFFSET_BITS=64",
+				"_UNICODE",
+				"GLEW_STATIC"
+			],
+			"compilerPath": "/usr/bin/gcc",
+			"cStandard": "gnu17",
+			"cppStandard": "gnu++14",
+			"intelliSenseMode": "linux-gcc-x64"
+		},
+		{
+			"name": "Win32",
+			"includePath": [
+				"${workspaceFolder}\\include",
+				"${workspaceFolder}\\lib\\win\\**"
+			],
+			"defines": [
+				"EIGEN_MPL2_ONLY",
+				"_UNICODE",
+				"GLEW_STATIC"
+			],
+			"cStandard": "c17",
+			"cppStandard": "c++17",
+			"intelliSenseMode": "windows-msvc-x64"
+		}
+	],
+	"version": 4
+}

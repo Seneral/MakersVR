@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#define NEAR_CLIP 10.0f
+#define FAR_CLIP 1000.0f
 
 /* Structures */
 
@@ -98,7 +100,7 @@ inline Eigen::Matrix3f getRotationZYX(const Eigen::Vector3f &eulerAngles)
  */
 inline Eigen::Projective3f createProjectionMatrix(float fovH, float fovV)
 {
-	float zN = 10.0f, zF = 1000.0f; // 0.1m-10m
+	float zN = NEAR_CLIP/2, zF = FAR_CLIP; // 0.1m-10m
 	float a = -(zF+zN)/(zF-zN), b = -2*zN*zF/(zF-zN);
 	float sX = (float)(1.0f/std::tan(fovH*PI/360.0f)), sY = (float)(1.0f/std::tan(fovV*PI/360.0f));
 

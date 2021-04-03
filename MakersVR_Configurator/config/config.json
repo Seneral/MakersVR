@@ -1,13 +1,21 @@
 {
 	"mode" : {
-		"cameraResolutionX": 1280,
-		"cameraResolutionY": 720,
-		"cameraFramerate": 30
+		"cameraResolutionX": 1640,
+		"cameraResolutionY": 1232,
+		"cameraFramerate": 30,
+		"cameraShutterSpeed": 500,
+		"cameraGain": 6,
+		"cameraAbsThreshold": 15,
+		"cameraEdgeThreshold": 10
 	},
 	"tracking" : {
-		"minIntersectError": 0.02,
-		"maxIntersectError": 0.05,
-		"sigmaError": 3
+		"minIntersectError": 0.2,
+		"maxIntersectError": 2,
+		"sigmaError": 3,
+		"maxTemporalStaticErrorT": 40,
+		"maxTemporalStaticErrorR": 20,
+		"maxTemporalDynamicErrorT": 1,
+		"maxTemporalDynamicErrorR": 0.5
 	},
 	"intrinsicCalib" : {
 		"selectionThreshold": {
@@ -29,6 +37,13 @@
 			"factor": 2
 		}
 	},
+	"extrinsicCalib" : {
+		"maxRelationCandidateDiffT": 20.0,
+		"maxRelationCandidateDiffR": 5.0,
+		"maxOriginCandidateDiffT": 5.0,
+		"maxOriginCandidateDiffR": 2.0,
+		"maxPoseMSE": 3.0
+	},
 	"testsetup" : {
 		"blobPxStdDev": 0.2,
 		"defaultFoV" : 160,
@@ -49,7 +64,7 @@
 				"label" : "Camera 1 Front Right",
 				"position" : "-1.65547 -1.94693 2.460",
 				"rotation" : "60.0 0.0 -40.0",
-				"distortion" : "0.132183 -0.186451 0.001267 0.000618 0.0",
+				"distortion" : "0.132183 -0.186451 0.0 0.0 0.0",
 				"fov" : {
 					"sensorSizeX": 3.68,
 					"sensorSizeY": 2.76,
@@ -60,7 +75,7 @@
 				"label" : "Camera 2 Front Left",
 				"position" : "1.65547 -1.94693 2.460",
 				"rotation" : "60.0 0.0 40.0",
-				"distortion" : "0.132183 -0.186451 0.001267 0.000618 0.0",
+				"distortion" : "0.132183 -0.186451 0.0 0.0 0.0",
 				"fov" : {
 					"sensorSizeX": 3.68,
 					"sensorSizeY": 2.76,
@@ -71,7 +86,7 @@
 				"label" : "Camera 3 Back",
 				"position" : "0.0 1.95684 2.45832",
 				"rotation" : "46.0 0.0 180.0",
-				"distortion" : "0.132183 -0.186451 0.001267 0.000618 0.0",
+				"distortion" : "0.132183 -0.186451 0.0 0.0 0.0",
 				"fov" : {
 					"sensorSizeX": 3.68,
 					"sensorSizeY": 2.76,

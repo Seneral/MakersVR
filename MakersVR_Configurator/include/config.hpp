@@ -22,10 +22,17 @@ struct Config
 		int cameraResolutionY;
 		int cameraFramerate;
 		int cameraShutterSpeed;
+		int cameraGain;
+		int cameraAbsThreshold;
+		int cameraEdgeThreshold;
 	} mode;
 	struct {
 		float minIntersectError;
 		float maxIntersectError;
+		float maxTemporalStaticErrorT;
+		float maxTemporalStaticErrorR;
+		float maxTemporalDynamicErrorT;
+		float maxTemporalDynamicErrorR;
 		float sigmaError;
 	} tracking;
 	struct {
@@ -38,6 +45,13 @@ struct Config
 		int gridSize;
 		IterativeParam<int> gridCountTarget;
 	} intrinsicCalib;
+	struct {
+		float maxRelationCandidateDiffT;
+		float maxRelationCandidateDiffR;
+		float maxOriginCandidateDiffT;
+		float maxOriginCandidateDiffR;
+		float maxPoseMSE;
+	} extrinsicCalib;
 	struct {
 		std::vector<DefMarker> calibrationMarkers;
 		std::vector<DefMarker> trackingMarkers;
