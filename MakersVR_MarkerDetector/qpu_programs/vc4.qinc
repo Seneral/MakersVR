@@ -1,0 +1,241 @@
+# general definitions
+
+# VPM setup helpers
+.func vdr_setup_0(mpitch, rowlen, nrows, dma)
+# .assert !(mpitch & (mpitch-1)) && !(mpitch & ~0x7fff0) 
+  .assert !(mpitch & ~0xf) 
+  .assert rowlen >= 0 && rowlen <= 0x10
+  .assert nrows >= 0 && nrows <= 0x10
+  .assert !(dma & ~0x7000ffff) && (dma & 0x70000000) != 0x10000000
+# 0x80000000 | ilog2(mpitch/8+1) << 24 | (rowlen & 0xf) << 20 | (nrows & 0xf) << 16 | dma
+  0x80000000 | mpitch << 24 | (rowlen & 0xf) << 20 | (nrows & 0xf) << 16 | dma
+.endf
+.func vdr_setup_1(stride)
+  .assert !(stride & ~0x1fff)
+  0x90000000 | stride
+.endf
+.func vdr_h32(vpitch, y, x)
+  .assert vpitch >= 0 && vpitch <= 0x10
+  .assert !(y & ~0x3f)
+  .assert !(x & ~0xf)
+  (vpitch & 0xf) << 12 | y << 4 | x
+.endf
+.func vdr_v32(vpitch, y, x)
+  .assert vpitch >= 0 && vpitch <= 0x10
+  .assert !(y & ~0x3f)
+  .assert !(x & ~0xf)
+  (vpitch & 0xf) << 12 | 0x800 | y << 4 | x
+.endf
+.func vdw_setup_0(units, depth, dma)
+  .assert units >= 0 && units <= 0x80
+  .assert depth >= 0 && depth <= 0x80
+  .assert !(dma & ~0x7fff)
+  0x80000000 | (units & 0x7f) << 23 | (depth & 0x7f) << 16 | (dma & 0xffff)
+.endf
+.func vdw_setup_1(stride)
+  .assert !(stride & ~0xffff) # VPM supports 16 bit stride rather than 13 as documented
+  0xc0000000 | stride
+.endf
+.func vdw_setup_1p(stride)
+  .assert !(stride & ~0xffff) # VPM supports 16 bit stride rather than 13 as documented
+  0xc0010000 | stride
+.endf
+.func dma_h32(y, x)
+  .assert !(y & ~0x7f)
+  .assert !(x & ~0xf)
+  0x4000 | y << 7 | x << 3
+.endf
+.func dma_h16p(y, x, h)
+  .assert !(y & ~0x7f)
+  .assert !(x & ~0xf)
+  .assert !(h & ~1)
+  0x4002 | y << 7 | x << 3 | h
+.endf
+.func dma_h8p(y, x, b)
+  .assert !(y & ~0x7f)
+  .assert !(x & ~0xf)
+  .assert !(b & ~3)
+  0x4004 | y << 7 | x << 3 | b
+.endf
+.func dma_v32(y, x)
+  .assert !(y & ~0x7f)
+  .assert !(x & ~0xf)
+  y << 7 | x << 3
+.endf
+.func dma_v16p(y, x, h)
+  .assert !(y & ~0x7f)
+  .assert !(x & ~0xf)
+  .assert !(h & ~1)
+  2 | y << 7 | x << 3 | h
+.endf
+.func dma_v8p(y, x, b)
+  .assert !(y & ~0x7f)
+  .assert !(x & ~0xf)
+  .assert !(b & ~3)
+  4 | y << 7 | x << 3 | b
+.endf
+.func vpm_setup(num, stride, dma)
+  .assert num >= 0 && num <= 0x10
+  .assert stride >= -0x40 && stride <= 0x40
+  .assert !(dma & ~0xfff)
+  (num & 0xf) << 20 | (stride & 0x3f) << 12 | dma
+.endf
+.func h32(y)
+  .assert !(y & ~0x3f)
+  0xa00 | y
+.endf
+.func h16p(y, h)
+  .assert !(y & ~0x3f)
+  .assert !(h & ~1)
+  0x900 | y << 1 | h
+.endf
+.func h16l(y, h)
+  .assert !(y & ~0x3f)
+  .assert !(h & ~1)
+  0xd00 | y << 1 | h
+.endf
+.func h8p(y, b)
+  .assert !(y & ~0x3f)
+  .assert !(b & ~3)
+  0x800 | y << 2 | b
+.endf
+.func h8l(y, b)
+  .assert !(y & ~0x3f)
+  .assert !(b & ~3)
+  0xc00 | y << 2 | b
+.endf
+.func v32(y, x)
+  .assert !(y & ~0x30)
+  .assert !(x & ~0xf)
+  0x200 | y | x
+.endf
+.func v16p(y, x, h)
+  .assert !(y & ~0x30)
+  .assert !(x & ~0xf)
+  .assert !(h & ~1)
+  0x100 | (y | x) << 1 | h
+.endf
+.func v16l(y, x, h)
+  .assert !(y & ~0x30)
+  .assert !(x & ~0xf)
+  .assert !(h & ~1)
+  0x500 | (y | x) << 1 | h
+.endf
+.func v8p(y, x, b)
+  .assert !(y & ~0x30)
+  .assert !(x & ~0xf)
+  .assert !(b & ~3)
+  (y | x) << 2 | b
+.endf
+.func v8l(y, x, b)
+  .assert !(y & ~0x30)
+  .assert !(x & ~0xf)
+  .assert !(b & ~3)
+  0x400 | (y | x) << 2 | b
+.endf
+
+# functional semaphore style
+.set sacq(i) sacq0 + i
+.set srel(i) srel0 + i
+
+# operand type query macros
+.set isConstant(x)  x < [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-2]
+.set isLdPE(x)      x >= [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-2] && x < :[0,0,0]
+.set isLdPES(x)     x >= [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-2] && x < [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2]
+.set isLdPEU(x)     x >= [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] && x < :[0,0,0]
+.set isRegister(x)  x >= :[0,0] && x < :[0,16]
+.set isRegfileA(x)  isRegister(x) && (x & :[0,1]) == :[0,1]
+.set isRegfileB(x)  isRegister(x) && (x & :[0,2]) == :[0,2]
+.set isAccu(x)      isRegister(x) && (x & :[-8,0x34]) == :[32,0] && (x & :[-2,0]) != :[38,0]
+.set isReadable(x)  isRegister(x) && (x & :[0,4]) == :[0,4] || x == r5
+.set isWritable(x)  isRegister(x) && (x & :[0,8]) == :[0,8]
+.set isRotate(x)    isRegister(x) && (x & :[0,0,-1]) != :[0,0]
+.set isSemaphore(x) x >= :[0,16,0] && x <= :[-1,-1]
+.set isLabel(x)     x > :[-1,-1,-1,255]
+.set isSmallImmd(x) isConstant(x) && (!(x+16 & ~0x1f) || !(x-0x3b800000 & 0xf87fffff))
+
+# mathematics
+.func min(x,y)
+  .if x < y
+    y
+  .else
+    x
+  .endif
+.endf
+.func max(x,y)
+  .if x > y
+    x
+  .else
+    y
+  .endif
+.endf
+.func ilog2(x) # unsigned!
+  .if !(x & ~0x3)
+    x - 1 - (x == 3) 
+  .elseif !(x & ~0xf)
+    ilog2(x >>> 2) + 2
+  .elseif !(x & ~0xff)
+    ilog2(x >>> 4) + 4
+  .elseif !(x & ~0xffff)
+    ilog2(x >>> 8) + 8
+  .else
+    ilog2(x >>> 16) + 16
+  .endif
+.endf
+.func countBits(x)
+  .lset x, x                        - (x >>> 1 & 0x5555555555555555)
+  .lset x, (x & 0x3333333333333333) + (x >>> 2 & 0x3333333333333333)
+  .lset x, (x & 0x0f0f0f0f0f0f0f0f) + (x >>> 4 & 0x0f0f0f0f0f0f0f0f)
+  .lset x, (x & 0x00ff00ff00ff00ff) + (x >>> 8 & 0x00ff00ff00ff00ff)
+  .lset x, (x & 0x0000ffff0000ffff) + (x >>> 16 & 0x0000ffff0000ffff)
+           (x & 0x00000000ffffffff) + (x >>> 32)
+.endf
+.func reverseBits4(x)
+  .lset x, x >>> 1 & 0x5 | (x & 0x5) <<< 1
+  x >>> 2 | x <<< 2
+.endf
+.func reverseBits8(x)
+  .lset x, x >>> 1 & 0x55 | (x & 0x55) <<< 1
+  .lset x, x >>> 2 & 0x33 | (x & 0x33) <<< 2
+  x >>> 4 | x <<< 4
+.endf
+.func reverseBits16(x)
+  .lset x, x >>> 1 & 0x5555 | (x & 0x5555) <<< 1
+  .lset x, x >>> 2 & 0x3333 | (x & 0x3333) <<< 2
+  .lset x, x >>> 4 & 0x0f0f | (x & 0x0f0f) <<< 4
+  x >>> 8 | x <<< 8
+.endf
+.func reverseBits32(x)
+  .lset x, x >>> 1 & 0x55555555 | (x & 0x55555555) <<< 1
+  .lset x, x >>> 2 & 0x33333333 | (x & 0x33333333) <<< 2
+  .lset x, x >>> 4 & 0x0f0f0f0f | (x & 0x0f0f0f0f) <<< 4
+  .lset x, x >>> 8 & 0x00ff00ff | (x & 0x00ff00ff) <<< 8
+  x >>> 16 | x <<< 16
+.endf
+.func reverseBits64(x)
+  .lset x, x >>> 1 & 0x5555555555555555 | (x & 0x5555555555555555) <<< 1
+  .lset x, x >>> 2 & 0x3333333333333333 | (x & 0x3333333333333333) <<< 2
+  .lset x, x >>> 4 & 0x0f0f0f0f0f0f0f0f | (x & 0x0f0f0f0f0f0f0f0f) <<< 4
+  .lset x, x >>> 8 & 0x00ff00ff00ff00ff | (x & 0x00ff00ff00ff00ff) <<< 8
+  .lset x, x >>> 16& 0x0000ffff0000ffff | (x & 0x0000ffff0000ffff) <<< 16
+  x >>> 32 | x <<< 32
+.endf
+.func reverseBits(x,n)
+  reverseBits64(x<<<(64-n))
+.endf
+.set M_E,       2.7182818284590452354  # e
+.set M_LOG2E,   1.4426950408889634074  # log_2 e
+.set M_LOG10E,  0.43429448190325182765 # log_10 e
+.set M_LN2,     0.69314718055994530942 # log_e 2
+.set M_LN10,    2.30258509299404568402 # log_e 10
+.set M_PI,      3.14159265358979323846 # pi
+.set M_2PI,     6.28318530717958647693 # 2 pi
+.set M_PI_2,    1.57079632679489661923 # pi/2
+.set M_PI_4,    0.78539816339744830962 # pi/4
+.set M_1_PI,    0.31830988618379067154 # 1/pi
+.set M_2_PI,    0.63661977236758134308 # 2/pi
+.set M_2_SQRTPI,1.12837916709551257390 # 2/sqrt pi
+.set M_SQRT2,   1.41421356237309504880 # sqrt 2
+.set M_SQRT1_2, 0.70710678118654752440 # 1/sqrt 2
+.set M_NAN,     0./0.
+.set M_INF,     1./0.
