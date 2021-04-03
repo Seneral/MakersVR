@@ -19,14 +19,29 @@ typedef struct GCS_CameraParams
 	uint16_t height;
 	uint16_t fps;
 	uint32_t shutterSpeed;
-	int32_t iso;
+	uint32_t iso;
+	uint8_t disableEXP;
+	uint8_t digitalGain;
+	uint8_t analogGain;
+	uint8_t disableAWB;
+	uint32_t disableISPBlocks;
 } GCS_CameraParams;
 
+/* Disable ISP Blocks */
+// https://www.raspberrypi.org/forums/viewtopic.php?f=43&t=175711
+// (1 << 2); // Black Level Compensation
+// (1 << 3); // Lens Shading
+// (1 << 5); // White Balance Gain
+// (1 << 7); // Defective Pixel Correction
+// (1 << 9); // Crosstalk
+// (1 << 18); // Gamma
+// (1 << 22); // Sharpening
+// (1 << 24); // Some Color Conversion
 
 /* Opaque GPU Camera Stream structure */
 typedef struct GCS GCS;
 
-GCS *gcs_create(const GCS_CameraParams *cameraParams);
+GCS *gcs_create(GCS_CameraParams *cameraParams);
 void gcs_destroy(GCS *gcs);
 
 /* Start GCS (camera stream). Enables MMAL camera and starts watchdog */

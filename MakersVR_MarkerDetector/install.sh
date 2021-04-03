@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Install service on next restart
-cp marker-detector.service /etc/systemd/system/
+sudo cp marker-detector.service /etc/systemd/system/
 sudo systemctl enable marker-detector.service
 
 # Install logging in all shells

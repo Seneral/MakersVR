@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2012, Broadcom Europe Ltd
+Copyright (c) 2012, Broadcom Europe Ltd.
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -25,24 +25,40 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef APPLOG_H
-#define APPLOG_H
+#ifndef MAILBOX_H
+#define MAILBOX_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** \file Application support for VCOS logging.
- * This header file is used to abstract the logging for files that are designed to be included
- * in different applications. It should be included before any other VMCS header files.
- */
+#include <linux/ioctl.h>
 
-#define VCOS_LOG_CATEGORY (&app_log_category)
-#include "interface/vcos/vcos.h"
-extern VCOS_LOG_CAT_T app_log_category;
+#define MAJOR_NUM 100
+#define IOCTL_MBOX_PROPERTY _IOWR(MAJOR_NUM, 0, char *)
+#define DEVICE_FILE_NAME "/dev/vcio"
+
+int mbox_open();
+void mbox_close(int file_desc);
+
+unsigned get_version(int file_desc);
+unsigned mem_alloc(int file_desc, unsigned size, unsigned align, unsigned flags);
+unsigned mem_free(int file_desc, unsigned handle);
+unsigned mem_lock(int file_desc, unsigned handle);
+unsigned mem_unlock(int file_desc, unsigned handle);
+void *mapmem(unsigned base, unsigned size);
+void unmapmem(void *addr, unsigned size);
+
+unsigned execute_code(int file_desc, unsigned code, unsigned r0, unsigned r1, unsigned r2, unsigned r3, unsigned r4, unsigned r5);
+unsigned execute_qpu(int file_desc, unsigned num_qpus, unsigned control, unsigned noflush, unsigned timeout);
+unsigned qpu_enable(int file_desc, unsigned enable);
+
+unsigned getTemperature(int file_desc);
+unsigned getClockRate(int file_desc, unsigned clock_id);
+unsigned getMaxClockRate(int file_desc, unsigned clock_id);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* APPLOG_H */
+#endif

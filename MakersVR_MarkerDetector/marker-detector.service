@@ -5,15 +5,9 @@ After=basic.target
 [Service]
 Type=simple
 
-WorkingDirectory=/home/pi/MakersVR_MarkerDetector/build
-ExecStart=/usr/bin/stdbuf -oL /home/pi/MakersVR_MarkerDetector/build/GLDetector -u
-#ExecStart=/home/pi/MakersVR_MarkerDetector/build/GLDetector -u 2>&1
+WorkingDirectory=/home/pi/MakersVR/MakersVR_MarkerDetector/build
+ExecStart=/usr/bin/stdbuf -oL /home/pi/MakersVR/MakersVR_MarkerDetector/build/Detector -c qpu_blob_tiled_min.bin -z -d -u
 
-#StandardInput=null
-#StandardOutput=journal
-#StandardError=journal
-#StandardOutput=tty
-#TTYPath=/dev/tty1
 SyslogIdentifier=MakersVR
 
 Restart=always
