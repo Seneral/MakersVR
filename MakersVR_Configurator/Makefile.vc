@@ -1,0 +1,86 @@
+
+# NOTE: OpenCV, wxWidgets and libusb need to be build first! See README for instructions
+
+# Set Debug options
+!IFDEF DEBUG
+cdebug = -D_DEBUG -Z7
+ldebug = -DEBUG:FASTLINK
+d = d
+mode = debug
+!ELSE
+cdebug =
+ldebug =
+d = 
+mode = release
+!ENDIF
+
+# Find library folders
+libs = lib\win\$(mode)
+cvl = $(libs)\opencv2
+wxl = $(libs)\wx
+wxi = $(wxl) # An additional configuration include
+
+# Make sure libraries are built
+!IF !EXIST("$(cvl)")
+!ERROR OpenCV library is missing ($(cvl))!
+!ENDIF
+!IF !EXIST("$(wxl)")
+!ERROR wxWidgets libraries are missing ($(wxl))!
+!ENDIF
+!IF !EXIST("include\opencv2")
+!ERROR OpenCV include files are missing (include\opencv2)!
+!ENDIF
+!IF !EXIST("include\wx")
+!ERROR wxWidgets include files are missing (include\wx)!
+!ENDIF
+
+# Setup compiler environment
+i = include
+s = source
+b = build
+o = build/obj
+cflags = -nologo -MT$(d) -DGLEW_STATIC $(cdebug)
+cxxflags = $(cflags) -EHsc -W3 -I$(i) -I$(wxi) -DEIGEN_MPL2_ONLY -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -std:c11
+{source\}.c{$(o)}.obj:
+  cl $(cflags) -c $** -Fo$*.obj
+{source\}.cpp{$(o)}.obj:
+  cl $(cxxflags) -c $** -Fo$*.obj
+
+# Define the libs to use based on debug options
+wxlibs = "$(wxl)\wxmsw31u$(d).lib" "$(wxl)\wxmsw31u$(d)_gl.lib"
+cvlibs = "$(cvl)\opencv_*440$(d).lib" "$(cvl)\zlib$(d).lib"
+usblibs = "$(libs)\libusb\libusb*.lib"
+syslibs = "user32.lib" "gdi32.lib" "shell32.lib" "comctl32.lib" "ole32.lib" "rpcrt4.lib" "advapi32.lib" "shlwapi.lib" # Required by wxWidgets in current build
+# "kernel32.lib" "user32.lib" "gdi32.lib" "comdlg32.lib" "winspool.lib" "winmm.lib" "shell32.lib" "comctl32.lib" "ole32.lib" "oleaut32.lib" "uuid.lib" "rpcrt4.lib" "advapi32.lib" "shlwapi.lib" # Required by wxWidgets in full build
+
+all: checkLibs mkbuild $(b)\configurator.exe cpylib
+
+# Make sure libraries are built
+checkLibs: 
+	@ IF NOT EXIST "$(cvl)" echo "OpenCV library is missing ($(cvl))!" && exit /b 1
+	@ IF NOT EXIST "$(wxl)" echo "wxWidgets library is missing ($(wxl))!" && exit /b 1
+	@ IF NOT EXIST "include/opencv2" echo "OpenCV include files are missing (include/opencv2)!" && exit /b 1
+	@ IF NOT EXIST "include/wx" echo "wxWidgets include files are missing (include/wx)!" && exit /b 1
+
+mkbuild:
+	@ IF NOT EXIST "$(b)" mkdir "$(b)"
+	@ IF NOT EXIST "$(o)" mkdir "$(o)"
+
+cpylib:
+	!copy $(libs)\libusb\libusb*.dll "$(b)\"
+
+# Configurator application
+$(b)\configurator.exe: $(o)\configurator.obj $(o)\comm.obj $(o)\config.obj $(o)\control.obj $(o)\testing.obj $(o)\calibration.obj $(o)\tracking.obj $(o)\ui.obj $(o)\visualization.obj $(o)\mesh.obj $(o)\glew.obj
+  link -out:$*.exe $** $(wxlibs) $(cvlibs) $(usblibs) $(syslibs) -nologo $(ldebug)
+
+# Add include dependencies (could be done automatically on linux, but not so on windows, so manual for all)
+$(o)/calibration.obj: $(i)/calibration.hpp $(i)/wxbase.hpp $(i)/eigenutil.hpp
+$(o)/comm.obj: $(i)/comm.hpp $(i)/util.hpp $(i)/wxbase.hpp
+$(o)/config.obj: $(i)/config.hpp $(i)/control.hpp $(i)/calibration.hpp $(i)/tracking.hpp $(i)/eigenutil.hpp
+$(o)/configurator.obj: $(i)/configurator.hpp $(i)/config.hpp $(i)/control.hpp $(i)/util.hpp $(i)/testing.hpp $(i)/calibration.hpp $(i)/tracking.hpp $(i)/comm.hpp $(i)/wxbase.hpp $(i)/eigenutil.hpp
+$(o)/control.obj: $(i)/control.hpp $(i)/config.hpp $(i)/calibration.hpp $(i)/tracking.hpp $(i)/wxbase.hpp $(i)/eigenutil.hpp
+$(o)/mesh.obj: $(i)/mesh.hpp
+$(o)/testing.obj: $(i)/testing.hpp $(i)/tracking.hpp $(i)/wxbase.hpp $(i)/eigenutil.hpp
+$(o)/tracking.obj: $(i)/tracking.hpp $(i)/wxbase.hpp $(i)/eigenutil.hpp
+$(o)/ui.obj: $(i)/ui.hpp $(i)/configurator.hpp $(i)/calibration.hpp $(i)/tracking.hpp $(i)/visualization.hpp $(i)/eigenutil.hpp
+$(o)/visualization.obj: $(i)/visualization.hpp $(i)/calibration.hpp $(i)/tracking.hpp $(i)/mesh.hpp $(i)/eigenutil.hpp

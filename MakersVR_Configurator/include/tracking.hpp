@@ -122,7 +122,7 @@ std::tuple<Eigen::Isometry3f, float, int> detectMarker3D(const MarkerTemplate3D 
 /**
  * Matches the current poses to the poses of the last frame using temporal information
  */
-void matchTrackedPoses(const std::vector<Eigen::Isometry3f> &currentPose, const std::vector<Eigen::Isometry3f> &lastPose, const std::vector<Eigen::Vector3f> &lastDir, const std::vector<float> &lastRot, std::vector<int> &matching);
+void matchTrackedPoses(const std::vector<Eigen::Isometry3f> &currentPose, const std::vector<Eigen::Isometry3f> &lastPose, const std::vector<Eigen::Vector3f> &lastDir, const std::vector<float> &lastRot, std::vector<int> &matching, float maxTemporalStaticErrorT = 10.0f, float maxTemporalStaticErrorR = 10.0f, float maxTemporalDynamicErrorT = 0.5f, float maxTemporalDynamicErrorR = 0.5f);
 
 /**
  * Accepts the previously calculated matching and updates temporal information

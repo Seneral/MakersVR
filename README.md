@@ -1,6 +1,9 @@
 # MakersVR
 Welcome to MakersVR, an open source VR hardware project focused around a cheap optical tracking system. <br>
-The goal of this project is to create a cheap full body tracking solution and provide a basis to develop custom VR hardware on.
+The goal of this project is to create a cheap but capable tracking system that competes with existing commercial tracking systems like SteamVR Lighthouse, has the flexibility of a professional optical tracking system found in motion capture studios, but is cheap and easy to build. </br>
+It uses multi-cameras to triangulate individual small LEDs in space, so it is very easy to develop custom tracked DIY hardware, e.g. gun stocks, by adding LEDs on them in an arbitrary pattern, and it's also possible to develop fingertip tracking. </br>
+Since the concept of such a system is decades old and still used in professional MoCap installations, although at a much higher price point, it could also integrate into existing MoCap focused solutions such as marker-based facial tracking and full body solvers. </br>
+Standard 3-Point (or more) Full Body Tracking for VR is of course possible by default, and will likely be the most accurate next to SteamVR trackers, but by far not the cheapest solution for FBT. 
 
 ## How does it work?
 The basis is an optical tracking systems with two or more cameras observing multiple active markers made with LEDs. <br>
@@ -8,10 +11,10 @@ The <a href="https://ar-tracking.com/technology/technical-details/">ART system</
 Each tracking camera, called <i>Marker Detector</i>, is a Raspberry Pi Zero plus camera. It is executing a Blob Detection algorithm to get the LEDs position in camera space. These are send over a serial connection to a central microcontroller, the <i>Marker Tracker</i>. This serial connection is a CAT6 cable, but is currently used for power, camera sync and UART (might be switched to SPI later). <br>
 The centralized <i>Marker Tracker</i> is currently a STM32F103 microcontroller, the cheap Blue Pill board. It is connected to up to three <i>Marker Detectors</i> at once as well as the Host PC over a USB connection. It collects the Blob2D data from each <i>Marker Detector</i> and currently immediately sends it to the Host PC using a isochronous Full-Speed USB 2.0 connection. It also times the frame of each <i>Marker Detector</i> down to 0.1ms and sends synchronization feedback back over the serial connection. <br>
 On the Host PC, the <i>Configurator</i> program (and later the driver) connects to the USB device and 2D Blobs are streamed in. These 2D Blobs are converted to 3D rays using the position of the cameras in the room and the poses of the markers are inferred. This is still in debate on how exactly this will work, there are several approaches that I will be trying out. <br>
-In the Documentation you can find <a href="https://github.com/Seneral/MakersVR/tree/master/Documentation/Design">more detailed design documents</a>, alongside a <a href="https://raw.githubusercontent.com/Seneral/MakersVR/master/Documentation/PreliminaryPartsList.ods">preliminary parts list</a>. This places the currently expected costs between 110€ and 200€ for a recommended system (3 cameras, 6 tracking targets) and 62€ for the absolute cheapest (2 cheap cameras, 3 tracking targets).
+In the Documentation you can find <a href="https://github.com/Seneral/MakersVR/tree/master/Documentation/Design">more detailed design documents</a>, alongside a <a href="https://raw.githubusercontent.com/Seneral/MakersVR/master/Documentation/PreliminaryPartsList.ods">preliminary parts list</a>. This places the currently expected costs at below 200€ for a recommended system (3 cameras, 6 tracking targets) and 62€ for the absolute cheapest (2 cheap cameras, 3 tracking targets).
 
 ## Current State
-I currently have a two-camera setup working as a prototype, and it works functionally. However I have not had luck with accurate intrinsic calibration yet, which holds me up from going any further until I have that figured out. A lot of the prototype is of course not final, the <i>Marker Detector</i> operates on an old GL backend that I am working to replace with a much better backend in the near future, for example. <br>
+I currently have a two-camera setup working as a prototype, and it works with my calibration marker prototype and tracking marker prototype. However I have not had luck with accurate intrinsic calibration yet, so the accuracy is not that great yet. Also since the cameras are not synced yet, quick movements disturb the marker greatly (and there's not filtering yet, either). <br>
 Here's one of the <i>Marker Detector</i> with the <i>Marker Tracker</i>:
 <p align="center">
   <img alt="Hardware Prototype of MakersVR" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/HW_Prototype_Annotated.jpg" width="50%"/>
@@ -25,7 +28,7 @@ The <i>Configurator</i> software currently contains a full testing mode and a de
   <br>
   The <i>Configurator</i> streaming blobs from the Prototype Hardware
 </p>
-The marker detection in the multi-camera marker tracking works similar to the <a href="https://ar-tracking.com/products/markers-targets/markers/">ART System</a>, with each 3D point identified based on the relations to its neighbours within the marker. This is marker configuration can be easily read in using a calibration phase. <br>
+The marker detection in the multi-camera marker tracking works similar to other professional tracking systems, with each 3D point identified based on the relations to its neighbours within the marker. This means markers can be easily read in using a calibration phase. <br>
 <p align="center">
   <img alt="Multi-Camera Tracking" src="https://github.com/Seneral/MakersVR/raw/master/Documentation/Media/SW_Multi-Camera-Tracking.gif" width="40%"/>
   <br>
@@ -45,22 +48,31 @@ One hardware problem I'm still facing is the camera selection. The ecosystem of 
 </p>
 
 ## Going Forward
-Although having a technically fully functional first prototype, it is not ready for use yet, and there's a lot to improve still: <br>
-1. Test out real hardware properly and improve accuracy along the way
-2. Finish alternative QPU backend on the <i>Marker Detector</i> for improved performance and accuracy
+Although having a functional second prototype, it is not ready for use yet, and there's a lot to improve still: <br>
+1. Develop alternate continuous calibration algorithm in hopes of achieving better accuracy while being easier for the user
+2. Implement camera sync feedback (else fast movements are inaccurate)
 3. Add additional CPU blob detection pass to increase accuracy 
-4. Implement camera sync feedback (else fast movements will be inaccurate)
-5. Add support for multiple properly tracked markers (currently simple frame-by-frame detection)
-6. Adapt SteamVR driver (SerialHMD) to general tracker use for FBT
+4. Add support for multiple properly tracked markers (currently simple frame-by-frame detection)
+5. Adapt SteamVR driver (SerialHMD) to general tracker use for FBT
+6. Improve QPU backend on the <i>Marker Detector</i> to improve latency (can be reduced by up to 65% still)
 7. Develop power-management electronics to keep LiPo safe and develop PCB
 8. Develop final marker design(s), create 3D-print base
 9. Create a (3D-printed?) case for the electronics
+10. Add support for a more powerful microcontroller as the MarkerTracker: </br>
+  Support more cameras at once, support chaining with more controllers, do onboard tracking, send of the final tracking data over bluetooth to standalone devices or over SPI port for embedded applications, all without requiring a host PC.
 
 Along the way, depending on interest, I will expand the documentation on this project. <br>
 
 ## Rebuilding
 Although the software is not finalized yet, the first prototype can be build in its current state using just a soldering iron and it will stay the same for the forseeable future. All of the accuracy and performance improvements are purely software work. The required hardware components (with some parameters to adjust to budget) can be found <a href="https://github.com/Seneral/MakersVR/raw/master/Documentation/PreliminaryPartsList.ods">here</a>. If there's interest I'll add detailed instructions how to wire everything and tips for creating the calibration marker and tracking marker. <br>
-The software already has all required instructions for compiling in the respective subfolders, especially the testing mode of the <i>Configurator</i> software can be used without hardware. 
+The software already has all required instructions for compiling in the respective subfolders, especially the testing mode of the <i>Configurator</i> software can be used without hardware.
+
+### Hardware
+The Controller (MarkerTracker) is just a simple MicroController that doesn't do much right now, the code is only running on an STM32F103 right now though. </br>
+For each camera (MarkerDetector), only a Raspberry Pi Zero (or another model) is required, along with a MIPI camera. Currently, all standard camera modules are supported (V1 and V2), as well as all their derivatives, each with different drawbacks. Technically any monochromatic camera can be used, assuming a I2C driver implementation, as the RAW 8bit data from them is directly usable without an ISP at all. The <a href="https://www.arducam.com/product/arducam-ov2311-mipi-2mp-global-shutter-camera-module-for-raspberry-pi-noir/">Arducam OV2311</a>, with global shutter, monochromatic, 1600x1300 (2MP) at 60fps, no IR filter, and 100°hFoV support, it is a perfect fit, but costs 100$ per module, so I cannot recommend it as a camera to use right now. Also it requires custom software as it uses custom drivers, although I am very interested in getting them to work so if there is interest and a way to get them cheaply I will add support. There's also the <a href="https://www.arducam.com/product/arducam-ov9281-1mp-global-shutter-noir-mono-mipi-camera-with-130deg-m12-mount-for-raspberry-pi/">Arducam OV9281</a> with 1280×800 (1MP) at 60fps (arducam only expose 1 lane) for 42$ - <a href="https://www.aliexpress.com/item/4001270692620.html">this cheaper model</a> exposes 2 lanes and thus goes up to 144fps at full resolution, for just 32$. It might be a decent high-end high-framerate option that also might support hardware sync (supports external trigger, with pretty constant delay of < 1ms, and aliexpress model exposes both as pins on the camera board).
+
+### Software
+Refer to each subprojects README for detailed instructions on setup.
 
 ## Sub-Projects
 - Marker Detector: Software of the Raspberry Pi
@@ -70,20 +82,20 @@ The software already has all required instructions for compiling in the respecti
 
 ## Tracking Quality
 All I can deliver about tracking quality right now are preliminary results. Here are some numbers for the current prototype: <br>
-#### Latency
+### Latency
 The newest WIP prototype uses the QPU backend of VC4CV, which is much, much faster than the GL backend that is currently in the repository.
-- The camera processing time before reaching my code is unknown, but below 5ms
-- The frametime is 2-3ms for a 640x480 image and 7-10ms for a 1640x1232 image - see below for more results.
-- The UART connection is currently only 11520 baud, so another ~8ms is added for just three markers
+- The camera processing time before reaching my code is still unknown, but likely below 5ms
+- The frametime is 2-3ms for a 640x480 image and ~10ms for a 1640x1232 image - see below for more results.
+- The UART connection is currently only 115200 baud, so another ~8ms is added for just three markers
 - STM32 adds little to no latency, and considering the frame time and delay on host side, another 2-4ms can be added
 
 This would add up to around 25ms, just to get it on the PC. <br>
 For the final version, I hope to speed up the serial connection, or use additional differential hardware.
 Assuming 1Mbaud (using either UART or SPI), it would only take around 1ms to transfer average data, so the final latency from movement to PC might drop as low as 10-15ms.
 
-##### Frametime results
-Results using WIP blob detection, from the moment the camera framework finishes a frame, to the moment the blobs are extracted.
-There are still some optimizations possible in ALL steps, but mostly Fetch, as the information where the blobs are could be passed from the QPU instead.
+#### Frametime results
+Results using WIP blob detection, from the moment the camera framework finishes a frame, to the moment the blobs are extracted. Note these are older, they do NOT include the frame copy fix which takes some more frametime. </br>
+But there are still some optimizations possible in ALL steps, but mostly Fetch, as the information where the blobs are could be passed from the QPU instead. In total, I expect I can cut this frametime down another 50-65%. </br>
 Here's with a single blob with 10px radius:
 ```
 Zero, 1536x1232: 142fps; QPU 3.68 + Fetch 2.70 + CCL 0.12 => 6.5ms
@@ -97,6 +109,9 @@ Zero, 640x480: 345fps; QPU 1.02 + Fetch 0.59 + CCL 0.76 => 2.37ms
 Zero, 512x480: 390fps; QPU 0.77 + Fetch 0.50 + CCL 0.75 => 2.02ms
 ```
 QPU: Blob detection to mask on the QPU - Fetch: Fetching regions with blobs from the mask using CPU - CCL: Connected Component Labeling to extract distinct blobs using CPU
+
+### Accuracy
+Little can be said about accuracy yet, as currently only the blobs binary average is taken as the center, and the size is also numerically estimated by the amount of dots. In the future, more sofisticated algorithms will be developed, like matching blobs to ellipsoids, or taking value averages for small blobs.
 
 ## Contact
 Depending on what you want:

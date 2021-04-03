@@ -1,0 +1,14 @@
+build/
+
+# Dependencies built on the fly
+lib/**/opencv2
+lib/**/wx
+lib/**/libusb
+include/opencv2
+include/wx
+include/libusb
+
+# Dependency build cache
+dependencies/*/linux
+dependencies/*/win
+dependencies/*/source

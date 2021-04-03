@@ -5,15 +5,43 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
-			"name": "Debug Configurator",
+			"name": "Linux Debug Configurator",
+			"type": "cppdbg",
+			"request": "launch",
+			"program": "${workspaceFolder}/build/configurator",
+			"args": [],
+			"MIMode": "gdb",
+			"miDebuggerArgs": "-ex 'skip -gfi /usr/include/c++/*' -ex 'skip -gfi /usr/include/c++/*/*' -ex 'skip -gfi /usr/include/c++/*/*/*' -ex 'skip -gfi /usr/include/c++/9/bits/*'",
+			"setupCommands": [
+				{
+					"description": "Enable pretty-printing for gdb",
+					"text": "-enable-pretty-printing",
+					"ignoreFailures": true
+				}
+			],
+			"stopAtEntry": false,
+			"cwd": "${workspaceFolder}",
+			"environment": [],
+			"externalConsole": false,
+			"logging": {
+				"trace": false,
+				"traceResponse": false,
+				"engineLogging": true
+			}
+		},
+		{
+			"name": "Windows Debug Configurator",
 			"type": "cppvsdbg",
 			"request": "launch",
-			"program": "${workspaceFolder}\\configurator.exe",
+			"program": "${workspaceFolder}\\build\\configurator.exe",
 			"args": [],
 			"stopAtEntry": false,
 			"cwd": "${workspaceFolder}",
 			"environment": [],
-			"externalConsole": true
+			"externalConsole": false,
+			"logging": {
+				"engineLogging": true
+			}
 		}
 	]
 }

@@ -1,21 +1,2 @@
-# No build
-MakersVR_MarkerDetector/build
-MakersVR_MarkerTracker/build
-
-# No build
-MakersVR_Configurator/build/obj
-MakersVR_Configurator/build/*.exe*
-MakersVR_Configurator/*.exe*
-MakersVR_Configurator/*.ilk
-MakersVR_Configurator/*.pdb
-# No lib binaries
-MakersVR_Configurator/lib/opencv2
-MakersVR_Configurator/lib/vc_x64_lib
-MakersVR_Configurator/lib/vc_lib
-# No includes, are created with lib build
-MakersVR_Configurator/include/opencv2
-MakersVR_Configurator/include/wx
-MakersVR_Configurator/include/msvc
-
 # vscode
 **/.vscode/settings.json

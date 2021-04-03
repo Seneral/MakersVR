@@ -1,53 +1,62 @@
 {
 	"version": "2.0.0",
-	"options": {
-		"shell": {
-			"executable": "cmd.exe",
-			"args": [
-				"/d", "/c",
-				"vcvars64.bat",
-				"&&"
-			]
-		}
-	},
 	"tasks": [
 		{
-			"label": "MSVC NMAKE Build Release",
+			"label": "Build Release",
 			"type": "shell",
-			"command": "nmake",
-			"args": [
-				"/NoLogo",
-				"/F",
-				"build/Makefile.vc"
-			],
-			"problemMatcher": [
-				"$msCompile"
-			],
-			"group": "build"
+			"group": "build",
+
+			"command": "make",
+			"problemMatcher": [ "$gcc" ],
+
+			"windows":{
+				"command": "nmake",
+				"args": [
+					"/NoLogo",
+					"/F",
+					"Makefile.vc"
+				],
+				"problemMatcher": [ "$msCompile" ],
+				"options": {
+					"shell": {
+						"executable": "cmd.exe",
+						"args": [ "/d", "/c", "vcvars64.bat", "&&" ]
+					}
+				},
+			}
 		},
 		{
-			"label": "MSVC NMAKE Build Debug",
+			"label": "Build Debug",
 			"type": "shell",
-			"command": "nmake",
-			"args": [
-				"/NoLogo",
-				"/F",
-				"build/Makefile.vc",
-				"DEBUG="
-			],
-			"problemMatcher": [
-				"$msCompile"
-			],
 			"group": {
 				"kind": "build",
 				"isDefault": true
+			},
+
+			"command": "make",
+			"problemMatcher": [ "$gcc" ],
+			"args": [ "DEBUG=1" ],
+
+			"windows":{
+				"command": "nmake",
+				"args": [
+					"/NoLogo",
+					"/F",
+					"Makefile.vc",
+					"DEBUG="
+				],
+				"problemMatcher": [ "$msCompile" ],
+				"options": {
+					"shell": {
+						"executable": "cmd.exe",
+						"args": [ "/d", "/c", "vcvars64.bat", "&&" ]
+					}
+				},
 			}
 		},
 		{
 			"label": "Run Configurator",
 			"type": "shell",
-			"command": "${workspaceFolder}\\configurator.exe",
-			"args": [],
 			"group": {
 				"kind": "test",
 				"isDefault": true
@@ -55,17 +64,10 @@
 			"presentation": {
 				"reveal": "always",
 				"panel": "new"
-			}
-		},
-		{
-			"label": "Run Emulator",
-			"type": "shell",
-			"command": "${workspaceFolder}\\emulator.exe",
-			"args": [],
-			"group": "test",
-			"presentation": {
-				"reveal": "always",
-				"panel": "new"
+			},
+			"command": "${workspaceFolder}/build/configurator",
+			"windows": {
+				"command": "${workspaceFolder}\\build\\configurator.exe"
 			}
 		}
 	]
