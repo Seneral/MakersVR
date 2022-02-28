@@ -2,6 +2,8 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ * default params : 
+ * sudo ./Detector -c qpu_blob_tiled_min.bin -z -s 1000 -g 10 -f 40 -m 0.1 -d -w 1296 -h 972 -n 1
  */
 
 #include <vector>
@@ -9,7 +11,11 @@
 #include <thread>
 #include <string>
 #include <math.h>
-// Console and UART
+// Console and UART and SOCK
+#include <errno.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+
 #include <termios.h>
 #include <errno.h> // Error integer and strerror() function
 #include <fcntl.h> // Contains file controls like O_RDWR
@@ -177,9 +183,11 @@ int main(int argc, char **argv)
 	bool zeroCompat = false;
 	bool debugViz = false;
 	bool useUART = false;
+	bool useSOCK = false;
+	int sock = -1;
 
 	int arg;
-	while ((arg = getopt(argc, argv, "c:w:h:f:s:g:m:n:q:pzdu")) != -1)
+	while ((arg = getopt(argc, argv, "c:w:h:f:s:g:m:n:q:pzdui")) != -1)
 	{
 		switch (arg)
 		{
@@ -226,6 +234,9 @@ int main(int argc, char **argv)
 				break;
 			case 'u':
 				useUART = true;
+				break;
+			case 'i':
+				useSOCK = true;
 				break;
 			default:
 				printf("Usage: %s -c codefile [-w width] [-h height] [-f fps] [-s shutter-speed-ns] [-g analog gain {0,16}] [-m main threshold 0-1] [-n diff threshold 0-1] [-q QPU mask {0,1}^12] [-p disable padding] [-z Zero compat mode] [-d debug visualization]\n", argv[0]);
@@ -309,8 +320,31 @@ abort:
 			uart_reset();
 			printf("Initiating UART connection...\n");
 		}
-		else
+		if(useSOCK)
 		{
+			if(sock > 0)
+				goto phase_blobdetection;
+			printf("Initiating SOCKET...\n");
+			struct sockaddr_in serv_addr;
+			sock = socket(AF_INET,SOCK_STREAM,0);
+			printf("\n sock initiation resulted in %d\n", (int)sock);
+			serv_addr.sin_family = AF_INET;
+			serv_addr.sin_port = htons(50001);
+			
+			inet_pton(AF_INET, "192.168.0.109" ,&serv_addr.sin_addr);
+			
+			printf("\n socket attempting to establish connection... \n");
+			int c = connect(sock, (struct sockaddr *)&serv_addr,sizeof(serv_addr));
+			if (c < 0)
+			{
+				printf("\n connection to socket failed\n");
+				goto abort;
+			}
+			printf("\n connection to socket successful\n");
+			continue;
+		}
+		
+		if (!useUART && !useSOCK){
 			uartFD = -1;
 			goto phase_blobdetection;
 		}
@@ -819,19 +853,6 @@ phase_blobdetection:
 				// Log errors occurred during execution
 				qpu_logErrors(&base);
 
-				if (zeroCompat) // Unlock intermediate buffer
-					qpu_unlockBuffer(&zeroCpyBuffer);
-
-	#ifdef RUN_CAMERA
-				// Unlock VCSM buffer
-				mem_unlock(base.mb, cameraBufferHandle);
-
-				// Return camera buffer to camera
-				gcs_returnFrameBuffer(gcs);
-	#else
-				qpu_unlockBuffer(&camEmulBuf[numFrames%emulBufCnt]);
-	#endif
-
 				if (result != 0)
 				{
 					printf("Encountered an error after %d frames!\n", numFrames);
@@ -852,16 +873,104 @@ phase_blobdetection:
 
 				// Perform Connected Component Labelling on regions
 				blobs.clear();
+				
 				performBlobDetectionCPU(blobs);
-//				printf("Found %d Blobs!\n", (int)blobs.size());
-//				for (int i = 0; i < blobs.size(); i++)
-//					printf("Blob %d has %d blobs!\n", i, (int)blobs[i].dots.size());
+				
+				printf("Found %d Blobs!\n", (int)blobs.size());
+				Color colors[blobs.size()];
+				uint8_t* buffer = (uint8_t*)cameraBuffer;
+				for (int i = 0; i < blobs.size(); i++)
+				{
+					int x = (int)blobs[i].centroid.X;
+					int y = (int)blobs[i].centroid.Y;
+					
+					int size = params.width * params.height;
+					int sizeY = params.height*srcStride;
+					int sizeUV = params.height*srcStride/4;
+					int indexY = 0;
+					
+					int iSizeY = srcStride*params.height;
+					int iSizeUV = (srcStride*params.height)/4;
+					uint8_t* pY = buffer;
+					uint8_t* pU = buffer + iSizeY;
+					uint8_t* pV = pU + iSizeUV;
+					int cY = pY[y * srcStride + x];
+					int cV = pV[((y/2) * (srcStride/2)) + (x/2)];
+					int cU = pU[((y/2) * (srcStride/2)) + (x/2)];
+					printf("\tcolY : %d\tcolU : %d\tcolV : %d\t size : %d %d %d\n", cY,cU,cV, sizeof(pY), sizeof(pV), sizeof(pU));
+					
+					int colR = (int)std::min(255,(int)std::max(cY + 1.402 * (cV - 128),(double)0));
+					int colG = std::min(255,(int)std::max(cY - 0.344 * (cU - 128) - 0.714 * (cV - 128),(double)0));
+					int colB = std::min(255,(int)std::max(cY + 1.772 * (cU - 128),(double)0));
+					char coll = 'N';
+					if(colR > colG && colR > colB){
+						coll = 'R';	
+					}
+					if(colG > colR && colG > colB){
+						coll = 'G';	
+					}
+					if(colB > colR && colB > colG){
+						coll = 'B';	
+					}
+					
+					printf("\t\t col RGB %d, %d, %d [%c]\n", colR,colG,colB, coll);
+					colors[i] = Color{(float)colR, (float)colG, (float)colB};
+					//printf("Blob %d has %d blobs!\n", i, (int)blobs[i].dots.size());
+					//printf("Blob %d has position %d , %d!\n", i, (int)blobs[i].centroid.X, (int)blobs[i].centroid.Y);
+				}
 
 				// Performance Diagnostics
 				cclTimeAvg += ((double)(clock() - perfClock)/CLOCKS_PER_SEC*1000-cclTimeAvg) / std::min(numFrames+1, avgFloating);
+									
+				if (zeroCompat) // Unlock intermediate buffer
+					qpu_unlockBuffer(&zeroCpyBuffer);
 
+	#ifdef RUN_CAMERA
+				// Unlock VCSM buffer
+				mem_unlock(base.mb, cameraBufferHandle);
+
+				// Return camera buffer to camera
+				gcs_returnFrameBuffer(gcs);
+	#else
+				qpu_unlockBuffer(&camEmulBuf[numFrames%emulBufCnt]);
+	#endif
+	
 				// Unlock target buffer
 				qpu_unlockBuffer(&bitmskBuffer);
+				
+				if(useSOCK)
+				{
+					//int resultSend = send(sock, "ping", strlen("ping"), 0);
+					//printf("send result %d\n",resultSend);
+					//if (resultSend < 0){
+						//fprintf(stderr,"recv: %s (%d)\n",strerror(errno),errno);
+						//printf("received error during attempt to send\n");
+					//}
+					if(blobs.size() > 0){
+						//std::string xstr = std::to_string(blobs[0].centroid.X);
+						//std::string ystr = std::to_string(blobs[0].centroid.Y);
+						//proposed protocol :
+						// [#][tag][size upper 8 bit][size lower bit][X][Y][S][R][G][B]
+						uint8_t body[] = {
+							(uint8_t)blobs[0].centroid.X,
+							(uint8_t)blobs[0].centroid.Y,
+							(uint8_t)blobs[0].centroid.S,
+							(uint8_t)colors[0].R,(uint8_t)colors[0].G,(uint8_t)colors[0].B
+						};
+						uint8_t packet[] = {'{',
+							(uint8_t)blobs[0].centroid.X,
+							(uint8_t)blobs[0].centroid.Y,
+							(uint8_t)blobs[0].centroid.S,
+							(uint8_t)colors[0].R,(uint8_t)colors[0].G,(uint8_t)colors[0].B,
+							'}'
+						};
+						//std::string packet = "{\"x\":" + xstr + ",\"y\":" + ystr +"}";
+						//const char* packet_cstr = packet.c_str();
+						//printf("send packet %s",packet_cstr);
+						char* packetChar = reinterpret_cast<char*>(packet);
+						send(sock, packetChar, strlen(packetChar), 0);
+					}
+				}	
 
 				// ---- Send UART Packet ----
 
@@ -914,7 +1023,7 @@ phase_blobdetection:
 					int frames = (numFrames - lastFrames);
 					lastFrames = numFrames;
 					float fps = frames / elapsedS;
-					printf("%d frames over %.2fs (%.1ffps); Frame Copy: %.2fms, QPU: %.2fms; Fetch: %.2fms; CCL: %.2fms! \n", frames, elapsedS, fps, cameraTimeAvg, qpuTimeAvg, fetchTimeAvg, cclTimeAvg);
+					//printf("%d frames over %.2fs (%.1ffps); Frame Copy: %.2fms, QPU: %.2fms; Fetch: %.2fms; CCL: %.2fms! \n", frames, elapsedS, fps, cameraTimeAvg, qpuTimeAvg, fetchTimeAvg, cclTimeAvg);
 				}
 				if (numFrames % 10 == 0)
 				{ // Detailed QPU performance gathering (every 10th frame to handle QPU performance register overflows)
@@ -922,13 +1031,13 @@ phase_blobdetection:
 				}
 				if (numFrames % 100 == 0 && numFrames <= 500)
 				{ // Detailed QPU performance report
-					printf("QPU Performance over past 500 frames:\n");
-					qpu_logPerformance(&perfState);
+					//printf("QPU Performance over past 500 frames:\n");
+					//qpu_logPerformance(&perfState);
 				}
 				if (numFrames % 500 == 0 && numFrames > 500)
 				{ // Detailed QPU performance report
-					printf("QPU Performance over past 500 frames:\n");
-					qpu_logPerformance(&perfState);
+					//printf("QPU Performance over past 500 frames:\n");
+					//qpu_logPerformance(&perfState);
 				}
 				if (numFrames % 100 == 0)
 				{
